@@ -119,11 +119,8 @@ public partial class App : Application
         }
         SystemEvents.DisplaySettingsChanged += DisplaySettingsChanged;
         subscribedToDisplayChanges = true;
-        if (coordinator.State is { Phase: ThemePhase.Active } or { Preferences.StartWithWindows: false })
-        {
-            try { coordinator.Resume(); }
-            catch (Exception error) { startupError = error.Message; }
-        }
+        try { coordinator.Resume(); }
+        catch (Exception error) { startupError = error.Message; }
         if (!background || startupError is not null || coordinator.State is { Phase: not ThemePhase.Active })
             ShowControl();
         else if (coordinator.State is null)
@@ -279,7 +276,8 @@ public partial class App : Application
             }
             else
             {
-                coordinator?.StopShell();
+                try { coordinator?.StopShell(); }
+                catch { /* The preview rollback record retains pending work for the next launch. */ }
             }
         }
         finally
