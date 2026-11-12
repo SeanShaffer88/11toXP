@@ -32,6 +32,7 @@ internal static class ThemeChecks
             WithSession(TaskbarPreviewIsolation);
             WithSession(TaskbarPreviewTrayVisibility);
             WithSession(TaskbarPreviewTrayRecovery);
+            TransparentTrayMask();
             WithSession(TaskbarPreviewFailure);
             WithSession(TaskbarPreviewRollbackFallback);
             WithSession(DisplaySelectionRecovery);
@@ -48,6 +49,8 @@ internal static class ThemeChecks
             WithSession(InterruptedWallpaperOptOut);
             LegacyJournal();
             SavedPreferences();
+            WithSession(PinnedStartMenuLifecycle);
+            AppearanceProfilePersistence();
             return 0;
         }
         catch (Exception error)
@@ -406,6 +409,19 @@ internal static class ThemeChecks
             "Explorer recovery ends the tray preview and reconciles the committed layout.");
 
         app.BeginTaskbarPreview(candidate);
+        app.CommitTaskbarPreview(() => app.Repair(null, candidate));
+        Require(!platform.AutoHide && platform.TrayThumbnailShown,
+            "Keeping the visible tray layout mirrors the tray after the countdown.");
+        app.BeginTaskbarPreview(XpTaskbarOnly);
+        Require(!platform.TrayThumbnailShown, "The XP-only candidate does not mirror the native tray.");
+        app.CancelTaskbarPreview();
+        Require(!platform.AutoHide && platform.TrayThumbnailShown,
+            "Undo restores the committed visible tray and its thumbnail.");
+        app.Repair(null, XpTaskbarOnly);
+        Require(platform.AutoHide && !platform.TrayThumbnailShown,
+            "The committed XP-only layout does not mirror the native tray.");
+
+        app.BeginTaskbarPreview(candidate);
         platform.ConnectedDisplays = 2;
         app.DisplayTopologyChanged();
         Require(!app.IsTaskbarPreviewActive && !journal.HasPreviewTrayRollback() && !platform.AutoHide &&
@@ -418,6 +434,13 @@ internal static class ThemeChecks
         Require(platform.AutoHide && !platform.TrayThumbnailShown && !journal.HasPreviewTrayRollback() && platform.AutoHideWrites == writes,
             "Preview does not change the global tray setting with multiple connected displays.");
         app.CancelTaskbarPreview();
+        app.Repair(null, candidate);
+        Require(platform.AutoHide && !platform.TrayThumbnailShown,
+            "The committed layout leaves native tray visibility and mirroring alone with multiple displays.");
+        platform.ConnectedDisplays = 1;
+        app.DisplayTopologyChanged();
+        Require(!platform.AutoHide && platform.TrayThumbnailShown,
+            "Returning to one display restores the committed native tray mirror.");
         app.Restore();
     }
 
@@ -462,6 +485,40 @@ internal static class ThemeChecks
             "Keep captures the original native setting before committing the visible tray.");
         reopened.Restore();
         Require(platform.AutoHide && journal.Load() is null, "A later Restore returns the original auto-hide setting.");
+    }
+
+    private static void TransparentTrayMask()
+    {
+        const int width = 52, height = 32;
+        const int icon = unchecked((int)0xFF10A5D1);
+        foreach (int gray in new[] { 0x29, 0xE7 })
+        {
+            int background = unchecked((int)0xFF000000) | gray * 0x010101;
+            var pixels = new int[width * height];
+            Array.Fill(pixels, background);
+            Require(TrayIconCapture.Extract(pixels, width, height) is null,
+                "A blank tray frame does not produce a mirror.");
+
+            for (int row = 0; row < height; row++)
+                pixels[row * width + 1] = icon;
+            for (int col = 0; col < width; col++)
+                pixels[1 * width + col] = icon;
+            Require(TrayIconCapture.Extract(pixels, width, height) is null,
+                "The vertical divider and horizontal tray edges do not survive cropping.");
+
+            for (int col = 18; col < 22; col++)
+                pixels[16 * width + col] = icon;
+            pixels[16 * width + 22] = unchecked((int)0xFF000000) | (gray + 16) * 0x010101;
+            var frame = TrayIconCapture.Extract(pixels, width, height);
+            Require(frame is { Width: 46, Height: 24 } &&
+                frame.Pixels.Count(pixel => pixel != 0) == 5 &&
+                frame.Pixels.Count(pixel => pixel == icon) == 4 &&
+                frame.Pixels.Count(pixel => (uint)pixel >> 24 is > 0 and < 255) == 1,
+                "Flat dark and light tray backgrounds become transparent with solid and antialiased icon pixels.");
+        }
+        Require(TrayIconCapture.Extract(new int[width * height], width - 1, height) is null &&
+            TrayIconCapture.Extract([], int.MaxValue, int.MaxValue) is null,
+            "Invalid tray dimensions are rejected before mask allocation.");
     }
 
     private static void TaskbarPreviewFailure(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
@@ -852,6 +909,101 @@ internal static class ThemeChecks
             File.Delete(path);
             directory.Delete();
         }
+    }
+
+    private static void PinnedStartMenuLifecycle(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
+    {
+        var empty = TaskbarOptions.Default;
+        Require(empty.HasSameLayout(empty with { StartMenuPins = [] }),
+            "Older taskbar settings without pins match an empty pin list.");
+        var first = new QuickLaunchEntry(null, @"C:\Tools\First.lnk");
+        var second = new QuickLaunchEntry(null, @"C:\Tools\Second.lnk");
+        var pins = new[] { first, second };
+        var options = empty with { StartMenuPins = pins };
+        var copy = options.CheckedCopy();
+        Array.Reverse(pins);
+        Require(copy.StartMenuPins!.SequenceEqual([first, second]) && !copy.HasSameLayout(options) &&
+            copy.HasSameQuickLaunch(options), "Pin order is independent of Quick Launch and cloned on validation.");
+        Require(copy.HasSameLayout(copy with
+        {
+            StartMenuPins = [first with { ShortcutPath = @"c:\tools\FIRST.LNK" }, second]
+        }), "Equivalent pin paths compare case-insensitively.");
+        ExpectInvalidData(() => (options with { StartMenuPins = [first, first] }).CheckedCopy());
+        ExpectInvalidData(() => (options with { StartMenuPins = [new(null, @"\\Server\Tools\Remote.lnk")] }).CheckedCopy());
+        ExpectInvalidData(() => (options with { StartMenuPins = [new(QuickLaunchItem.Settings, null)] }).CheckedCopy());
+        ExpectInvalidData(() => (options with
+        {
+            StartMenuPins = Enumerable.Range(0, TaskbarOptions.MaximumStartMenuPins + 1)
+                .Select(index => new QuickLaunchEntry(null, $@"C:\Tools\Pin{index}.lnk")).ToArray()
+        }).CheckedCopy());
+
+        var baseline = ThemePreferences.Default with { StartWithWindows = false };
+        var candidate = baseline with { Taskbar = copy };
+        app.Apply(null, baseline);
+        Require(app.NeedsTaskbarPreview(candidate), "Adding Start menu pins goes through the layout countdown.");
+        app.BeginTaskbarPreview(candidate);
+        Require(platform.Options!.HasSameLayout(copy), "The preview shows candidate pins.");
+        app.CancelTaskbarPreview();
+        Require(journal.Load()!.Preferences.Taskbar.HasSameLayout(empty) && platform.Options!.HasSameLayout(empty),
+            "Undo retains the previously committed Start menu.");
+        app.BeginTaskbarPreview(candidate);
+        app.CommitTaskbarPreview(() => app.Repair(null, candidate));
+        Require(journal.Load()!.Preferences.Taskbar.HasSameLayout(copy) && platform.Options!.HasSameLayout(copy) &&
+            platform.WallpaperCalls == 0 && platform.Registered is null,
+            "Keeping the preview saves pin order without changing wallpaper or startup.");
+        app.Restore();
+    }
+
+    private static void AppearanceProfilePersistence()
+    {
+        var directory = Directory.CreateTempSubdirectory("11toXP-profiles-");
+        var path = Path.Combine(directory.FullName, "appearance-profiles.json");
+        try
+        {
+            var store = new AppearanceProfileStore(directory.FullName);
+            Require(store.Load().Length == 0 && !File.Exists(path), "Reading an empty profile store creates no state.");
+            var pins = new QuickLaunchEntry[] { new(null, @"C:\Tools\First.lnk") };
+            var selected = ThemePreferences.Default with
+            {
+                Variant = LunaVariant.Silver,
+                Appearance = AppearanceComponents.Cursors,
+                KeepWindowsTrayVisible = false,
+                Taskbar = TaskbarOptions.Default with { StartMenuPins = pins, ButtonSize = TaskbarButtonSize.Small }
+            };
+            var profile = AppearanceProfile.Capture("  Evening work  ", selected);
+            pins[0] = new QuickLaunchEntry(null, @"C:\Tools\Other.lnk");
+            store.Save([profile]);
+            var loaded = new AppearanceProfileStore(directory.FullName).Load().Single();
+            var applied = loaded.ToPreferences(startWithWindows: false);
+            var json = File.ReadAllText(path);
+            Require(loaded.Name == "Evening work" && applied is
+                { Variant: LunaVariant.Silver, Appearance: AppearanceComponents.Cursors,
+                  StartWithWindows: false, KeepWindowsTrayVisible: false } &&
+                applied.Taskbar.ButtonSize == TaskbarButtonSize.Small &&
+                applied.Taskbar.StartMenuPins!.Single().ShortcutPath == @"C:\Tools\First.lnk" &&
+                !json.Contains("StartWithWindows", StringComparison.Ordinal) &&
+                !json.Contains("Wallpaper", StringComparison.Ordinal),
+                "Profiles clone and persist appearance while preserving the caller's sign-in choice and excluding wallpaper.");
+            ExpectInvalidData(() => store.Save([profile, profile with { Name = "evening work" }]));
+            ExpectInvalidData(() => store.Save(Enumerable.Repeat(profile, AppearanceProfileStore.MaximumProfiles + 1).ToArray()));
+            Require(File.ReadAllText(path) == json, "An invalid profile save leaves the previous store intact.");
+            store.Save([]);
+            Require(store.Load().Length == 0 && !File.Exists(path), "Deleting the last profile removes the store.");
+            File.WriteAllText(path, "{ malformed }");
+            ExpectInvalidData(() => store.Load());
+        }
+        finally
+        {
+            File.Delete(path);
+            directory.Delete();
+        }
+    }
+
+    private static void ExpectInvalidData(Action action)
+    {
+        try { action(); }
+        catch (InvalidDataException) { return; }
+        throw new InvalidOperationException("Invalid appearance data was accepted.");
     }
 
     private static void WithSession(Action<ThemeCoordinator, ThemeJournal, FakePlatform> test)

@@ -14,6 +14,15 @@
 
 *The XP taskbar during the 15-second layout preview on a single display. The Windows tray below handles clicks.*
 
+## In development
+
+These features are available in builds from the current source. The download above is v0.3.0.
+
+- Use **Start Menu Pins** to add and reorder local Windows shortcuts above **All Programs**. Choose **Apply** or **Repair** to preview and save the order.
+- With **Keep Windows tray visible** on a single display, live tray icons appear over the Luna background during the countdown and after applying when Windows exposes them. The native tray below handles clicks and menus.
+- Right-click a task button for **Restore**, **Minimize**, **Maximize**, or **Close**. For grouped windows, choose the window by title.
+- Use **Appearance Profiles** to save, load, or delete named appearance presets. Loading stages the controls for **Apply** or **Repair**. The normal layout countdown applies, and wallpaper and sign-in stay under their own controls.
+
 ## Run
 
 Extract the portable ZIP to a folder you plan to keep, then open `11toXP.exe`. The executable is unsigned and includes its runtime. The ZIP also includes `Notices.txt`.

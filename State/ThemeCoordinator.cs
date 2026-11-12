@@ -267,7 +267,8 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
             var preferences = state.Preferences;
             var availability = platform.InspectTaskbar(preferences.Taskbar);
             platform.StartShell(preferences.Variant, preferences.Taskbar,
-                availability.CanUseXpOnly && !preferences.KeepWindowsTrayVisible);
+                allowTrayReveal: availability.CanUseXpOnly && !preferences.KeepWindowsTrayVisible,
+                showTrayThumbnail: availability.CanUseXpOnly && preferences.KeepWindowsTrayVisible);
         }
         else
         {
@@ -781,7 +782,8 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
         try
         {
             platform.StartShell(state.Preferences.Variant, state.Preferences.Taskbar,
-                availability.CanUseXpOnly && !state.Preferences.KeepWindowsTrayVisible);
+                allowTrayReveal: availability.CanUseXpOnly && !state.Preferences.KeepWindowsTrayVisible,
+                showTrayThumbnail: availability.CanUseXpOnly && state.Preferences.KeepWindowsTrayVisible);
         }
         catch
         {

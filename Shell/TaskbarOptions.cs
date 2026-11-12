@@ -34,7 +34,7 @@ internal sealed record QuickLaunchEntry(QuickLaunchItem? BuiltIn, string? Shortc
         if (new DriveInfo(Path.GetPathRoot(path)!).DriveType == DriveType.Network)
             throw new InvalidOperationException("Choose a shortcut stored on a local drive.");
         if (!File.Exists(path))
-            throw new FileNotFoundException("The Quick Launch shortcut is missing. Remove it or restore the shortcut file.");
+            throw new FileNotFoundException("The shortcut is missing. Remove it or restore the shortcut file.");
     }
 
     internal bool SameAs(QuickLaunchEntry other) => BuiltIn == other.BuiltIn &&
@@ -71,9 +71,11 @@ internal sealed record QuickLaunchEntry(QuickLaunchItem? BuiltIn, string? Shortc
 internal sealed record TaskbarOptions(TaskGrouping Grouping, QuickLaunchItem[] QuickLaunch, bool UseXpExplorer)
 {
     internal const int MaximumQuickLaunchItems = 12;
+    internal const int MaximumStartMenuPins = 8;
     internal const int MaximumDisplayIds = 32;
     internal static TaskbarOptions Default => new(TaskGrouping.Never, [QuickLaunchItem.FileExplorer, QuickLaunchItem.Settings], false);
     public QuickLaunchEntry[]? OrderedQuickLaunch { get; init; }
+    public QuickLaunchEntry[]? StartMenuPins { get; init; }
     public TaskbarButtonSize ButtonSize { get; init; } = TaskbarButtonSize.Large;
     public bool ShowLabels { get; init; } = true;
     public bool IsLocked { get; init; } = true;
@@ -89,6 +91,7 @@ internal sealed record TaskbarOptions(TaskGrouping Grouping, QuickLaunchItem[] Q
         {
             QuickLaunch = [.. QuickLaunch],
             OrderedQuickLaunch = OrderedQuickLaunch?.ToArray(),
+            StartMenuPins = StartMenuPins?.ToArray(),
             DisplayIds = DisplayIds?.ToArray()
         };
     }
@@ -96,15 +99,14 @@ internal sealed record TaskbarOptions(TaskGrouping Grouping, QuickLaunchItem[] Q
     internal bool HasSameLayout(TaskbarOptions other) =>
         Grouping == other.Grouping && UseXpExplorer == other.UseXpExplorer && ButtonSize == other.ButtonSize &&
         ShowLabels == other.ShowLabels && IsLocked == other.IsLocked && HasSameQuickLaunch(other) &&
+        SameEntries(StartMenuPins ?? [], other.StartMenuPins ?? []) &&
         (DisplayIds is null ? other.DisplayIds is null : other.DisplayIds is { } ids &&
             DisplayIds.Length == ids.Length && new HashSet<string>(DisplayIds, StringComparer.OrdinalIgnoreCase).SetEquals(ids));
 
-    internal bool HasSameQuickLaunch(TaskbarOptions other)
-    {
-        var first = EffectiveQuickLaunch;
-        var second = other.EffectiveQuickLaunch;
-        return first.Count == second.Count && first.Zip(second).All(pair => pair.First.SameAs(pair.Second));
-    }
+    internal bool HasSameQuickLaunch(TaskbarOptions other) => SameEntries(EffectiveQuickLaunch, other.EffectiveQuickLaunch);
+
+    private static bool SameEntries(IReadOnlyList<QuickLaunchEntry> first, IReadOnlyList<QuickLaunchEntry> second) =>
+        first.Count == second.Count && first.Zip(second).All(pair => pair.First.SameAs(pair.Second));
 
     internal void Validate()
     {
@@ -115,6 +117,10 @@ internal sealed record TaskbarOptions(TaskGrouping Grouping, QuickLaunchItem[] Q
             displays.Any(id => string.IsNullOrWhiteSpace(id) || id.Length > 256 || id.Any(char.IsControl)) ||
             displays.Distinct(StringComparer.OrdinalIgnoreCase).Count() != displays.Length))
             throw new InvalidDataException("The taskbar display selection is invalid.");
+        if (StartMenuPins is { } pins && (pins.Length > MaximumStartMenuPins ||
+            pins.Any(pin => pin is null || pin.BuiltIn is not null || !pin.IsValid()) ||
+            pins.Select(pin => pin.ShortcutPath).Distinct(StringComparer.OrdinalIgnoreCase).Count() != pins.Length))
+            throw new InvalidDataException("The Start menu pins are invalid.");
         if (OrderedQuickLaunch is not { } entries)
             return;
 

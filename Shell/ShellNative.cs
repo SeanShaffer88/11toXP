@@ -150,6 +150,20 @@ internal static class ShellNative
     internal static extern bool IsIconic(nint window);
 
     [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool IsZoomed(nint window);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool IsWindowEnabled(nint window);
+
+    [DllImport("user32.dll")]
+    internal static extern nint GetSystemMenu(nint window, [MarshalAs(UnmanagedType.Bool)] bool revert);
+
+    [DllImport("user32.dll")]
+    internal static extern uint GetMenuState(nint menu, uint item, uint flags);
+
+    [DllImport("user32.dll")]
     internal static extern nint GetAncestor(nint window, uint flags);
 
     [DllImport("user32.dll")]
