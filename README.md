@@ -14,7 +14,7 @@ Put `11toXP.exe` in a location you plan to keep, then open it.
 
 **Show Windows Taskbar** in the XP Start menu pauses the XP taskbar and restores the Windows taskbar's original auto-hide setting. Select **Repair** to resume the XP taskbar. If Windows ignores the auto-hide request, both bars may be visible. The Windows key still opens the Windows Start menu.
 
-11toXP styles the built-in desktop icons for This PC, Documents, Network, and Recycle Bin if already visible. It uses original assets for those icons, four pointer roles, and five sound events. High contrast, custom pointer sizes, and muted sound events can limit these changes. Windows Settings, Explorer interiors, individual app frames, system flyouts, and protected Windows screens retain their native appearance.
+11toXP styles the built-in desktop icons for This PC, Documents, Network, and Recycle Bin if already visible. It uses original assets for those icons and four pointer roles, plus five original sounds for six supported events. High contrast, custom pointer sizes, and muted sound events can limit these changes. Windows Settings, Explorer interiors, individual app frames, system flyouts, and protected Windows screens retain their native appearance.
 
 ## State And Recovery
 
