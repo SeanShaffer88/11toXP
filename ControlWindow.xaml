@@ -159,8 +159,12 @@
               </StackPanel>
             </Grid>
           </StackPanel>
-          <Button Content="Open XP Explorer" HorizontalAlignment="Left" Margin="0,0,0,12"
-                  AutomationProperties.AutomationId="OpenXpExplorer" Click="OpenXpExplorerClick"/>
+          <WrapPanel Margin="0,0,0,12">
+            <Button Content="Open XP Explorer" Margin="0,0,8,0"
+                    AutomationProperties.AutomationId="OpenXpExplorer" Click="OpenXpExplorerClick"/>
+            <Button x:Name="FocusTaskbarAction" Content="_Focus XP Taskbar"
+                    AutomationProperties.AutomationId="FocusXpTaskbar" Click="FocusTaskbarClick"/>
+          </WrapPanel>
           <Border Padding="10,8" Background="{DynamicResource StatusPanel}" BorderBrush="{DynamicResource Rule}" BorderThickness="1">
             <Grid>
               <Grid.ColumnDefinitions>

@@ -41,6 +41,7 @@ public partial class ControlWindow : Window
         LoadPreferences(app.Coordinator?.State?.Preferences ?? ThemePreferences.Default);
         ApplyHighContrast();
         SystemParameters.StaticPropertyChanged += SystemParametersChanged;
+        Activated += (_, _) => RefreshTaskbarFocus();
         if (!preview && app.Coordinator?.State?.WallpaperSelection is { } wallpaper)
         {
             image = wallpaper.Requested;
@@ -60,6 +61,7 @@ public partial class ControlWindow : Window
         RepairAction.IsEnabled = active;
         RestoreAction.IsEnabled = preview ? previewApplied : state is not null;
         RestoreAndExitAction.IsEnabled = preview || coordinator is not null;
+        RefreshTaskbarFocus();
         Components.IsEnabled = TaskbarSettings.IsEnabled = preview || (coordinator is not null && (state is null || active));
         WallpaperOptIn.IsEnabled = preview || (coordinator is not null && (state is null || active));
         WallpaperPicker.IsEnabled = WallpaperOptIn.IsEnabled && WallpaperOptIn.IsChecked == true;
@@ -68,12 +70,16 @@ public partial class ControlWindow : Window
         WallpaperValue.Text = coordinator?.WallpaperStatus ?? "Unmanaged";
         StartupValue.Text = coordinator?.StartupStatus ?? "Off";
         CompatibilityValue.Text = preview ? "Preview" : coordinator?.CompatibilityStatus ?? "Restore record unavailable";
-        StatusMessage.Text = app.StartupError ?? message ?? (preview
+        var status = app.StartupError ?? message ?? (preview
             ? "Preview mode. Try the controls without changing Windows."
             : active ? "The XP appearance is active."
             : state is not null ? "Restore previous settings before applying again."
             : "Apply the XP appearance to this Windows account.");
-        (UIElementAutomationPeer.FromElement(StatusMessage) as AutomationPeer)?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+        if (StatusMessage.Text != status)
+        {
+            StatusMessage.Text = status;
+            UIElementAutomationPeer.CreatePeerForElement(StatusMessage)?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+        }
         UpdateWallpaperText();
     }
 
@@ -177,6 +183,20 @@ public partial class ControlWindow : Window
 
     private void OpenXpExplorerClick(object sender, RoutedEventArgs e) =>
         PerformOperation(() => app.OpenXpExplorer(SelectedVariant), "XP Explorer opened.");
+
+    private void RefreshTaskbarFocus() =>
+        FocusTaskbarAction.IsEnabled = !preview && app.CanFocusXpTaskbar;
+
+    private void FocusTaskbarClick(object sender, RoutedEventArgs e)
+    {
+        FocusTaskbarAction.Focus();
+        if (!app.TryFocusXpTaskbar())
+        {
+            app.ClearStartupError();
+            message = "The XP taskbar could not receive keyboard focus.";
+            RefreshStatus();
+        }
+    }
 
     private void QuickLaunchAddClick(object sender, RoutedEventArgs e)
     {
@@ -325,5 +345,8 @@ public partial class ControlWindow : Window
         }
     }
 
-    private sealed record Shortcut(QuickLaunchItem Id, string Label);
+    private sealed record Shortcut(QuickLaunchItem Id, string Label)
+    {
+        public override string ToString() => Label;
+    }
 }

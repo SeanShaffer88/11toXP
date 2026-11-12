@@ -28,6 +28,8 @@ internal sealed class StartMenu : Window
     private bool programsVisible;
     private bool dismissing;
 
+    internal event Action? EscapeDismissed;
+
     internal StartMenu(Window owner, LunaVisuals visuals, Action openControl, Action? showWindowsTaskbar,
         Action<string?>? openXpExplorer = null, bool useXpExplorer = false)
     {
@@ -313,7 +315,10 @@ internal sealed class StartMenu : Window
         if (programsVisible)
             ShowMain();
         else
+        {
             Dismiss();
+            EscapeDismissed?.Invoke();
+        }
     }
 
     private void Execute(Action action, bool closeBeforeAction)
@@ -412,5 +417,8 @@ internal sealed class StartMenu : Window
         }
     }
 
-    private sealed record ProgramShortcut(string Name, string Path);
+    private sealed record ProgramShortcut(string Name, string Path)
+    {
+        public override string ToString() => Name;
+    }
 }

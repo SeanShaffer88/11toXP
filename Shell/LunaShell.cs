@@ -81,6 +81,19 @@ public sealed class LunaShell : IDisposable
     public event Action? ExplorerRestarted;
     public event Action<Exception>? ShellFaulted;
 
+    internal bool CanFocusStart => registered && !fullScreen && !arranging &&
+        bar is { IsVisible: true } && start is { IsVisible: true, IsEnabled: true };
+
+    internal bool TryFocusStart()
+    {
+        dispatcher.VerifyAccess();
+        if (!CanFocusStart || bar is not { } window || start is not { } button)
+            return false;
+        if (!window.IsActive && !window.Activate())
+            return false;
+        return button.Focus();
+    }
+
     public void Start()
     {
         dispatcher.VerifyAccess();
@@ -111,6 +124,7 @@ public sealed class LunaShell : IDisposable
             };
             bar.Closing += OnBarClosing;
             bar.SizeChanged += OnBarSizeChanged;
+            bar.PreviewKeyDown += OnBarPreviewKeyDown;
             BuildBar();
             nint handle = new WindowInteropHelper(bar).EnsureHandle();
             source = HwndSource.FromHwnd(handle)
@@ -690,6 +704,7 @@ public sealed class LunaShell : IDisposable
                 if (ReferenceEquals(menu, opened))
                     menu = null;
             };
+            opened.EscapeDismissed += () => TryFocusStart();
             menu = opened;
             opened.Show();
         });
@@ -702,6 +717,14 @@ public sealed class LunaShell : IDisposable
         opened?.Dismiss();
         if (openContextMenu is { } context)
             context.IsOpen = false;
+    }
+
+    private void OnBarPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Escape || menu is not null || openContextMenu is { IsOpen: true })
+            return;
+        e.Handled = true;
+        RunFromBar(openControl);
     }
 
     private void RefreshPalette()

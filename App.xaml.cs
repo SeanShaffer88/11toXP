@@ -13,6 +13,7 @@ public partial class App : Application
     private EventWaitHandle? showRequest;
     private RegisteredWaitHandle? showRegistration;
     private ThemeCoordinator? coordinator;
+    private ThemePlatform? themePlatform;
     private ControlWindow? control;
     private ExplorerWindow? explorer;
     private string? startupError;
@@ -79,6 +80,7 @@ public partial class App : Application
                 path => OpenXpExplorer(coordinator?.State?.Preferences.Variant ?? LunaVariant.Blue, path));
             coordinator = new ThemeCoordinator(new ThemeJournal(directory), platform);
             coordinator.Load();
+            themePlatform = platform;
         }
         catch (Exception error)
         {
@@ -120,6 +122,8 @@ public partial class App : Application
     internal ThemeCoordinator? Coordinator => coordinator;
     internal string? StartupError => startupError;
     internal string? StateDirectory => directory;
+    internal bool CanFocusXpTaskbar => themePlatform?.CanFocusXpTaskbar == true;
+    internal bool TryFocusXpTaskbar() => themePlatform?.TryFocusXpTaskbar() == true;
     internal void ClearStartupError() => startupError = null;
 
     internal void OpenXpExplorer(LunaVariant variant, string? path = null)

@@ -273,8 +273,10 @@ internal sealed partial class ExplorerWindow : Window
 
     private void ShowStatus(string text)
     {
+        if (Status.Text == text)
+            return;
         Status.Text = text;
-        UIElementAutomationPeer.FromElement(Status)?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+        UIElementAutomationPeer.CreatePeerForElement(Status)?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
     }
 
     private void BackClick(object sender, RoutedEventArgs e) => MoveHistory(-1);
