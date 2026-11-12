@@ -26,6 +26,32 @@ internal sealed class ThemeState
 internal sealed class ThemeJournal(string directory)
 {
     private readonly string path = Path.Combine(directory, "theme-state.json");
+    private readonly string previewTrayPath = Path.Combine(directory, "preview-tray.json");
+
+    public bool HasPreviewTrayRollback()
+    {
+        try
+        {
+            StateFiles.Guard(directory, directory: true);
+            StateFiles.Guard(previewTrayPath, directory: false);
+            using var stream = File.OpenRead(previewTrayPath);
+            if (stream.Length != 4 || !JsonSerializer.Deserialize<bool>(stream))
+                throw new InvalidDataException("The taskbar preview restore record is invalid.");
+            return true;
+        }
+        catch (FileNotFoundException) { return false; }
+        catch (DirectoryNotFoundException) { return false; }
+    }
+
+    public void SavePreviewTrayRollback() =>
+        StateFiles.WriteAtomically(directory, previewTrayPath, stream => JsonSerializer.Serialize(stream, true), overwrite: false);
+
+    public void ClearPreviewTrayRollback()
+    {
+        StateFiles.Guard(directory, directory: true);
+        StateFiles.Guard(previewTrayPath, directory: false);
+        File.Delete(previewTrayPath);
+    }
 
     public ThemeState? Load()
     {

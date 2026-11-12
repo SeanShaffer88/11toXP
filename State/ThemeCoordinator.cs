@@ -155,7 +155,11 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
         if (State is not null)
             ActiveState();
         taskbarPreview = candidate.CheckedCopy();
-        try { ShowPreviewShell(taskbarPreview); }
+        try
+        {
+            ShowPreviewShell(taskbarPreview);
+            RevealPreviewTray(taskbarPreview);
+        }
         catch (Exception error)
         {
             taskbarPreview = null;
@@ -178,7 +182,11 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
             throw new InvalidOperationException("There is no taskbar preview to keep.");
         ArgumentNullException.ThrowIfNull(applyConfirmed);
         taskbarPreview = null;
-        try { applyConfirmed(); }
+        try
+        {
+            RestorePreviewTray();
+            applyConfirmed();
+        }
         catch (Exception error)
         {
             RestoreShellAfterPreview(error);
@@ -209,6 +217,7 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
     {
         if (IsTaskbarPreviewActive)
             throw new InvalidOperationException("Keep or revert the taskbar preview first.");
+        RestorePreviewTray();
     }
 
     private void ShowPreviewShell(ThemePreferences candidate)
@@ -217,6 +226,32 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
             platform.StartShell(candidate.Variant, candidate.Taskbar, allowTrayReveal: false);
         else
             platform.StopShell();
+    }
+
+    private void RevealPreviewTray(ThemePreferences candidate)
+    {
+        if (!candidate.UseTaskbar || !candidate.KeepWindowsTrayVisible ||
+            !platform.InspectTaskbar(candidate.Taskbar).CanUseXpOnly)
+            return;
+
+        bool autoHide = platform.ReadAutoHide() ??
+            throw new InvalidOperationException("Windows could not read taskbar auto-hide. Try again after Explorer is ready.");
+        if (!autoHide)
+            return;
+
+        journal.SavePreviewTrayRollback();
+        if (!ConfirmTrayAutoHide(false))
+            throw new InvalidOperationException("Windows could not show its tray for the preview. Try again.");
+    }
+
+    private void RestorePreviewTray()
+    {
+        if (!journal.HasPreviewTrayRollback())
+            return;
+
+        if (platform.ReadAutoHide() != true && !ConfirmTrayAutoHide(true))
+            throw new InvalidOperationException("Windows could not restore taskbar auto-hide after the preview. Try again after Explorer is ready.");
+        journal.ClearPreviewTrayRollback();
     }
 
     private void RestoreCommittedShell()
@@ -236,11 +271,15 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
 
     private void RestoreShellAfterPreview(Exception? primary = null)
     {
-        try { RestoreCommittedShell(); }
+        try
+        {
+            RestorePreviewTray();
+            RestoreCommittedShell();
+        }
         catch (Exception rebuildError)
         {
             var errors = new List<Exception>();
-            var message = "11toXP could not rebuild the previous XP taskbar.";
+            var message = "11toXP could not restore the previous taskbar layout.";
             if (primary is not null)
             {
                 errors.Add(primary);
@@ -371,6 +410,7 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
 
     public void Resume()
     {
+        RestorePreviewTray();
         if (State is { Preferences.StartWithWindows: false })
             Restore();
         else if (State is { Phase: ThemePhase.Active } state)
@@ -381,9 +421,19 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
     {
         if (taskbarPreview is { } candidate)
         {
-            ShowPreviewShell(candidate);
-            return;
+            if (candidate.UseTaskbar && candidate.KeepWindowsTrayVisible)
+            {
+                // Explorer can reset auto-hide when it restarts. Roll back the existing
+                // preview before reconciling the committed layout with the new shell.
+                CancelTaskbarPreview();
+            }
+            else
+            {
+                ShowPreviewShell(candidate);
+                return;
+            }
         }
+        RestorePreviewTray();
         if (ShellPaused || State is not { Phase: ThemePhase.Active, Preferences.UseTaskbar: true } state)
             return;
         RefreshShell(state, verifyBuild: false);
@@ -393,6 +443,7 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
     {
         // End the candidate before reconciling global auto-hide for the actual display topology.
         taskbarPreview = null;
+        RestorePreviewTray();
         if (ShellPaused || State is not { Phase: ThemePhase.Active, Preferences.UseTaskbar: true } state)
             platform.StopShell();
         else
@@ -472,9 +523,12 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
 
     private void RestoreAutoHideAfterFault()
     {
-        if (State is not { } state)
-            return;
-        try { RestoreAutoHide(state); }
+        try
+        {
+            RestorePreviewTray();
+            if (State is { } state)
+                RestoreAutoHide(state);
+        }
         catch (Exception error)
         {
             LastRecoveryFailure = RecoveryFailure.From("Windows taskbar", error);
@@ -488,8 +542,12 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
         taskbarPreview = null;
         if (State is not { } state)
         {
-            if (wasPreviewing)
-                platform.StopShell();
+            try
+            {
+                if (wasPreviewing)
+                    platform.StopShell();
+            }
+            finally { RestorePreviewTray(); }
             return;
         }
         state.Phase = ThemePhase.Restoring;
@@ -498,7 +556,11 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
         CompatibilityStatus = "Restore pending";
         var errors = new List<string>();
         AttemptRestore("XP taskbar", () => platform.StopShell(), () => ShellStatus = "Windows taskbar", errors);
-        AttemptRestore("Windows taskbar", () => RestoreAutoHide(state), () => { }, errors);
+        AttemptRestore("Windows taskbar", () =>
+        {
+            RestorePreviewTray();
+            RestoreAutoHide(state);
+        }, () => { }, errors);
         if (state.StartupCommand is not null || state.PreviousStartupCommand is not null)
             RunComponent("Sign-in startup", () => ClearStartup(state), () => StartupStatus = "Needs repair", errors);
         if (state.Appearance is { } appearance)
@@ -528,7 +590,8 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
     public void StopShell()
     {
         taskbarPreview = null;
-        platform.StopShell();
+        try { platform.StopShell(); }
+        finally { RestorePreviewTray(); }
     }
 
     private ThemeState ActiveState() =>

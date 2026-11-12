@@ -30,6 +30,8 @@ internal static class ThemeChecks
             WithSession(TemporaryTrayRevealFailures);
             WithSession(TemporaryTrayRevealRecovery);
             WithSession(TaskbarPreviewIsolation);
+            WithSession(TaskbarPreviewTrayVisibility);
+            WithSession(TaskbarPreviewTrayRecovery);
             WithSession(TaskbarPreviewFailure);
             WithSession(TaskbarPreviewRollbackFallback);
             WithSession(DisplaySelectionRecovery);
@@ -377,6 +379,89 @@ internal static class ThemeChecks
             platform.AppearanceApplies.Count == appearanceApplies && platform.StartupCommandReads == startupReads &&
             platform.AutoHideWrites == writes && platform.WallpaperCalls == 0, "The resize grip commits only taskbar layout.");
         app.Restore();
+    }
+
+    private static void TaskbarPreviewTrayVisibility(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
+    {
+        app.Apply(null, XpTaskbarOnly);
+        var candidate = XpTaskbarOnly with { KeepWindowsTrayVisible = true };
+        platform.BeforeSetAutoHide = enabled =>
+        {
+            if (!enabled && app.IsTaskbarPreviewActive)
+                Require(journal.HasPreviewTrayRollback(), "The preview records rollback before revealing the tray.");
+        };
+        app.BeginTaskbarPreview(candidate);
+        Require(!platform.AutoHide && platform.Shell && journal.HasPreviewTrayRollback() &&
+            journal.Load() is { OriginalAutoHide: false, Preferences.KeepWindowsTrayVisible: false },
+            "Preview reveals the native tray and retains the committed XP-only state.");
+
+        app.CancelTaskbarPreview();
+        Require(platform.AutoHide && platform.Shell && !journal.HasPreviewTrayRollback() &&
+            journal.Load()?.Preferences.KeepWindowsTrayVisible == false,
+            "Undo and timeout restore the previous native tray state and layout.");
+
+        app.BeginTaskbarPreview(candidate);
+        app.ExplorerRestarted();
+        Require(!app.IsTaskbarPreviewActive && platform.AutoHide && platform.Shell && !journal.HasPreviewTrayRollback(),
+            "Explorer recovery ends the tray preview and reconciles the committed layout.");
+
+        app.BeginTaskbarPreview(candidate);
+        platform.ConnectedDisplays = 2;
+        app.DisplayTopologyChanged();
+        Require(!app.IsTaskbarPreviewActive && !journal.HasPreviewTrayRollback() && !platform.AutoHide &&
+            journal.Load() is { OriginalAutoHide: null, Preferences.KeepWindowsTrayVisible: false },
+            "Topology changes undo the preview and release the committed global auto-hide override.");
+
+        platform.SetAutoHide(true);
+        int writes = platform.AutoHideWrites;
+        app.BeginTaskbarPreview(candidate);
+        Require(platform.AutoHide && !journal.HasPreviewTrayRollback() && platform.AutoHideWrites == writes,
+            "Preview does not change the global tray setting with multiple connected displays.");
+        app.CancelTaskbarPreview();
+        app.Restore();
+    }
+
+    private static void TaskbarPreviewTrayRecovery(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
+    {
+        var candidate = XpTaskbarOnly with { KeepWindowsTrayVisible = true };
+        app.BeginTaskbarPreview(candidate);
+        Require(!journal.HasPreviewTrayRollback(), "An already visible tray needs no rollback record.");
+        platform.SetAutoHide(true);
+        app.ExplorerRestarted();
+        Require(!app.IsTaskbarPreviewActive && !platform.Shell && !journal.HasPreviewTrayRollback(),
+            "Explorer recovery never starts new native ownership midway through a preview.");
+
+        platform.FailingAutoHideTarget = false;
+        ExpectFailure(() => app.BeginTaskbarPreview(candidate));
+        Require(platform.AutoHide && !platform.Shell && !app.IsTaskbarPreviewActive &&
+            !journal.HasPreviewTrayRollback() && journal.Load() is null,
+            "A failed reveal clears its completed rollback and does not create committed state.");
+        platform.FailingAutoHideTarget = null;
+
+        app.BeginTaskbarPreview(candidate);
+        platform.StopShell();
+        var reopened = new ThemeCoordinator(journal, platform);
+        reopened.Load();
+        platform.FailingAutoHideTarget = true;
+        ExpectFailure(reopened.Resume);
+        Require(journal.HasPreviewTrayRollback() && !platform.Shell && journal.Load() is null,
+            "Unfinished preview recovery survives a failed startup attempt without applying a layout.");
+        platform.FailingAutoHideTarget = null;
+        reopened.Restore();
+        Require(platform.AutoHide && !journal.HasPreviewTrayRollback() && journal.Load() is null,
+            "Restore can recover the native tray even without committed theme state.");
+
+        reopened.BeginTaskbarPreview(candidate);
+        reopened.StopShell();
+        Require(platform.AutoHide && !platform.Shell && !journal.HasPreviewTrayRollback(),
+            "Normal exit restores the pre-preview tray setting.");
+
+        reopened.BeginTaskbarPreview(candidate);
+        reopened.CommitTaskbarPreview(() => reopened.Apply(null, candidate));
+        Require(!platform.AutoHide && !journal.HasPreviewTrayRollback() && journal.Load()?.OriginalAutoHide == true,
+            "Keep captures the original native setting before committing the visible tray.");
+        reopened.Restore();
+        Require(platform.AutoHide && journal.Load() is null, "A later Restore returns the original auto-hide setting.");
     }
 
     private static void TaskbarPreviewFailure(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
@@ -781,6 +866,7 @@ internal static class ThemeChecks
         finally
         {
             journal.Clear();
+            journal.ClearPreviewTrayRollback();
             directory.Delete();
         }
     }
