@@ -11,7 +11,9 @@ internal static class TrayIconCapture
     private const int MaxHeight = 256;
     private const int MaxPixels = 131072;
     private const int UntouchedPixel = 0x00FF01FE;
-    private const uint PrintClientOnly = 1;
+    private const uint DcCache = 0x00000002;
+    private const uint DcClipSiblings = 0x00000010;
+    private const uint SourceCopy = 0x00CC0020;
     private static readonly SemaphoreSlim CaptureSlot = new(1, 1);
 
     internal readonly record struct Windows(nint Taskbar, nint Tray, nint Clock);
@@ -51,8 +53,7 @@ internal static class TrayIconCapture
         await CaptureSlot.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            // PrintWindow calls Explorer synchronously. Do not hold the UI thread or queue
-            // another worker if Explorer is hung, including across taskbar rebuilds.
+            // Keep native capture off the UI thread and serialize it across taskbar rebuilds.
             return await Task.Run(() => Capture(source, cancellationToken), cancellationToken).ConfigureAwait(false);
         }
         finally { CaptureSlot.Release(); }
@@ -69,19 +70,28 @@ internal static class TrayIconCapture
                 return null;
             cancellationToken.ThrowIfCancellationRequested();
 
-            // Clip the destination to the icon region before printing. No clock pixels enter the DIB.
+            // Clip the destination to the icon region. No clock pixels enter the DIB.
             int width = source.IconWidth;
             int height = source.Client.Height;
-            nint dc = CreateCompatibleDC(0);
-            if (dc == 0)
+            nint tray = source.Windows.Tray;
+            nint sourceDc = GetDCEx(tray, 0, DcCache | DcClipSiblings);
+            if (sourceDc == 0)
                 return null;
-            try { return ReadClient(dc, source, width, height, cancellationToken); }
-            finally { DeleteDC(dc); }
+            try
+            {
+                nint dc = CreateCompatibleDC(sourceDc);
+                if (dc == 0)
+                    return null;
+                try { return ReadClient(dc, sourceDc, source, width, height, cancellationToken); }
+                finally { DeleteDC(dc); }
+            }
+            finally { ReleaseDC(tray, sourceDc); }
         }
         finally { SetThreadDpiAwarenessContext(previousDpi); }
     }
 
-    private static Frame? ReadClient(nint dc, Source source, int width, int height, CancellationToken cancellationToken)
+    private static Frame? ReadClient(nint dc, nint sourceDc, Source source, int width, int height,
+        CancellationToken cancellationToken)
     {
         var info = new BitmapInfoHeader
         {
@@ -107,7 +117,8 @@ internal static class TrayIconCapture
                 Array.Fill(untouched, UntouchedPixel);
                 for (int row = 0; row < height; row++)
                     Marshal.Copy(untouched, 0, pixels + row * width * sizeof(int), width);
-                if (!PrintWindow(source.Windows.Tray, dc, PrintClientOnly) || !GdiFlush() ||
+                // SRCCOPY reads the tray window DC without CAPTUREBLT or a print message to Explorer.
+                if (!BitBlt(dc, 0, 0, width, height, sourceDc, 0, 0, SourceCopy) || !GdiFlush() ||
                     Describe(FindWindows()) != source)
                     return null;
                 cancellationToken.ThrowIfCancellationRequested();
@@ -162,7 +173,7 @@ internal static class TrayIconCapture
                     support = count;
                 }
             }
-            // The window print path normally yields a flat background. An unknown texture or
+            // The window DC normally yields a flat background. An unknown texture or
             // partially painted frame must not reintroduce an opaque Windows tray strip.
             if (support * 3 < iconWidth || (priorBackground >= 0 && Difference(background, priorBackground) > 24))
                 return null;
@@ -240,11 +251,18 @@ internal static class TrayIconCapture
     private static extern nint SetThreadDpiAwarenessContext(nint context);
 
     [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool PrintWindow(nint window, nint dc, uint flags);
+    private static extern nint GetDCEx(nint window, nint region, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern int ReleaseDC(nint window, nint dc);
 
     [DllImport("gdi32.dll")]
     private static extern nint CreateCompatibleDC(nint dc);
+
+    [DllImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool BitBlt(nint destination, int x, int y, int width, int height,
+        nint source, int sourceX, int sourceY, uint rasterOperation);
 
     [DllImport("gdi32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
