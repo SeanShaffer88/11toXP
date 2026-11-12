@@ -6,6 +6,7 @@
 | --- | --- |
 | Shell | The app supplies a Luna taskbar, green Start button, two-column Start menu, labeled task buttons, optional grouping, configurable Quick Launch, and a clock. Quick Launch accepts local Windows shortcut files and asks Windows to open them only when selected for launch. Keep the source shortcut files in place. Shell menus provide access to the stock Windows 11 taskbar. Native appbar APIs reserve desktop space. |
 | Windows tray | **Keep Windows tray visible** defaults to checked, including for older preferences that lack the option. With the XP taskbar active, keep the Windows taskbar visible beneath it so Windows continues to handle its tray icons and overflow. Uncheck the option and select **Repair** to request the XP-only layout. **Restore** returns the original Windows auto-hide setting. |
+| Temporary tray reveal | In XP-only mode on a verified Windows build, **Show Windows Tray** reveals the native tray below the XP bar and **Hide Windows Tray** returns to XP-only mode. The XP bar stays active. The reveal is session state, while the existing journal retains the original auto-hide setting for recovery. Repair, Restore, pausing, and restarting 11toXP end the reveal. |
 | Appearance | Luna Blue, Silver, and Olive Green change app-rendered surfaces. Independent controls manage the taskbar, original XP-inspired icons, cursors, and sounds. The app records each newly enabled component's baseline before making changes. |
 | XP Explorer | Browse local folders in the same executable through a folder tree, task pane, toolbar, and address bar. Windows opens files and handles file operations through native Explorer. |
 | Apply | Save and flush the original values before setting any persistent Windows preferences. **Start with Windows** defaults to enabled, including for older journals. Apply and Repair register the named per-user startup entry when enabled and remove the owned entry when disabled. |
@@ -22,6 +23,7 @@
 - Exercise apply, repair, restore, repeated operations, and failure recovery using isolated fixtures. Assert zero wallpaper calls when the option was never enabled.
 - Verify selective capture, apply, retry, restore, and resumption. Keep active schema-1 journals from existing versions recoverable.
 - Verify the default tray setting for older preferences, native tray interaction, XP-only layout on Repair, and restoration of the original auto-hide setting.
+- Verify keyboard access to the temporary tray toggle, coexistence with the active XP bar, and recovery after Explorer restarts or 11toXP exits unexpectedly during a reveal.
 - Verify that session-only mode removes only the owned startup entry and restores after an interrupted sign-out. Verify local shortcut ordering and the diagnostic export field allowlist.
 - Verify the packaged control window and shell against the available interactive Windows desktop. Record tested and untested scenarios separately.
 - Require independent review of the final diff and evidence before integration.

@@ -27,6 +27,8 @@ public sealed class LunaShell : IDisposable
     private readonly Dispatcher dispatcher = Dispatcher.CurrentDispatcher;
     private readonly Action openControl;
     private readonly Action? showWindowsTaskbar;
+    private readonly Action? toggleTrayReveal;
+    private readonly Func<bool>? isTrayRevealed;
     private readonly Dictionary<TaskbarKey, TaskButton> taskButtons = [];
     private readonly LunaVariant variant;
     private readonly TaskbarOptions options;
@@ -46,6 +48,7 @@ public sealed class LunaShell : IDisposable
     private int inlineQuickLaunchLimit;
     private Button? overflow;
     private Button? clock;
+    private Button? trayRevealButton;
     private Button? start;
     private ShellNative.Rectangle? reservation;
     private bool registered;
@@ -62,10 +65,13 @@ public sealed class LunaShell : IDisposable
     }
 
     internal LunaShell(Action openControl, Action? showWindowsTaskbar, LunaVariant variant,
-        TaskbarOptions options, Action<string?>? openXpExplorer)
+        TaskbarOptions options, Action<string?>? openXpExplorer, Action? toggleTrayReveal = null,
+        Func<bool>? isTrayRevealed = null)
     {
         this.openControl = openControl ?? throw new ArgumentNullException(nameof(openControl));
         this.showWindowsTaskbar = showWindowsTaskbar;
+        this.toggleTrayReveal = toggleTrayReveal;
+        this.isTrayRevealed = isTrayRevealed;
         this.variant = variant;
         this.options = options.CheckedCopy();
         this.openXpExplorer = openXpExplorer;
@@ -167,6 +173,7 @@ public sealed class LunaShell : IDisposable
             if (!bar.IsVisible && !arranging)
                 bar.Show();
             RefreshPalette();
+            UpdateTrayRevealButton();
             tasks?.Refresh();
             UpdateClock();
         }
@@ -378,7 +385,7 @@ public sealed class LunaShell : IDisposable
         bar.Background = visuals.Bar;
         var layout = new Grid { Background = visuals.Bar, ContextMenu = CreateBarContextMenu() };
         foreach (GridLength width in new[] { GridLength.Auto, GridLength.Auto, new GridLength(1, GridUnitType.Star),
-                                            GridLength.Auto, GridLength.Auto })
+                                            GridLength.Auto, GridLength.Auto, GridLength.Auto })
             layout.ColumnDefinitions.Add(new ColumnDefinition { Width = width });
 
         var startLabel = new StackPanel { Orientation = Orientation.Horizontal };
@@ -433,13 +440,37 @@ public sealed class LunaShell : IDisposable
         overflow.Click += (_, _) => AdvanceTasks();
         AddColumn(layout, overflow, 3);
 
+        if (toggleTrayReveal is not null)
+        {
+            trayRevealButton = visuals.NewButton("", "", visuals.TaskButtonStyle, visuals.Tray);
+            trayRevealButton.Margin = new Thickness(2, 0, 0, 0);
+            AutomationProperties.SetAutomationId(trayRevealButton, "TrayRevealButton");
+            trayRevealButton.Click += (_, _) =>
+            {
+                RunFromBar(toggleTrayReveal);
+                UpdateTrayRevealButton();
+            };
+            UpdateTrayRevealButton();
+            AddColumn(layout, trayRevealButton, 4);
+        }
+
         clock = visuals.NewButton("Date and Time", "", visuals.TaskButtonStyle, visuals.Tray);
         clock.MinWidth = 88;
         clock.Margin = new Thickness(2, 0, 0, 0);
         clock.Click += (_, _) => RunFromBar(() => StartMenu.LaunchFile("ms-settings:dateandtime"));
-        AddColumn(layout, clock, 4);
+        AddColumn(layout, clock, 5);
 
         bar.Content = layout;
+    }
+
+    private void UpdateTrayRevealButton()
+    {
+        if (trayRevealButton is not { } button)
+            return;
+        var label = isTrayRevealed?.Invoke() == true ? "Hide Windows Tray" : "Show Windows Tray";
+        button.Content = label;
+        button.ToolTip = label;
+        AutomationProperties.SetName(button, label);
     }
 
     private static void AddColumn(Grid grid, UIElement child, int column)
@@ -807,7 +838,7 @@ public sealed class LunaShell : IDisposable
         {
             action();
         }
-        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or IOException or
+        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or IOException or InvalidDataException or
                                   UnauthorizedAccessException or SecurityException)
         {
             if (bar is not null)

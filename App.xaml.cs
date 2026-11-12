@@ -80,7 +80,8 @@ public partial class App : Application
             directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "11toXP");
             preferencesStore = new ThemePreferenceStore(directory);
             var platform = new ThemePlatform(directory, ShowControl, ShowWindowsTaskbar, ExplorerRestarted, ShellFaulted,
-                path => OpenXpExplorer(coordinator?.State?.Preferences.Variant ?? LunaVariant.Blue, path));
+                path => OpenXpExplorer(coordinator?.State?.Preferences.Variant ?? LunaVariant.Blue, path),
+                ToggleTrayReveal, () => coordinator?.TrayRevealed == true);
             coordinator = new ThemeCoordinator(new ThemeJournal(directory), platform, preferencesStore);
             coordinator.Load();
             themePlatform = platform;
@@ -184,6 +185,14 @@ public partial class App : Application
             return;
         ShowControl();
         control?.PerformOperation(() => coordinator?.ShowWindowsTaskbar(), "Windows taskbar shown. Repair resumes the XP taskbar.");
+    }
+
+    private void ToggleTrayReveal()
+    {
+        if (sessionEnding || coordinator is null)
+            return;
+        try { coordinator.ToggleTrayReveal(); }
+        finally { control?.RefreshStatus(); }
     }
 
     private void ExplorerRestarted()
