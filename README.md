@@ -2,21 +2,19 @@
 
 11toXP gives your Windows 11 desktop the Windows XP Luna look, with an XP-style taskbar, Start menu, and optional file browser. One executable contains the app, its artwork, and the .NET runtime.
 
-**Stable release v0.3.0** for Windows 11 x64.
+**Stable release v0.4.0** for Windows 11 x64.
 
-[Download the portable ZIP](https://github.com/SeanShaffer88/11toXP/releases/download/v0.3.0/11toXP-v0.3.0-win-x64.zip) · [Release notes and SHA-256 checksum](https://github.com/SeanShaffer88/11toXP/releases/tag/v0.3.0)
+[Download the portable ZIP](https://github.com/SeanShaffer88/11toXP/releases/download/v0.4.0/11toXP-v0.4.0-win-x64.zip) · [Release notes and SHA-256 checksum](https://github.com/SeanShaffer88/11toXP/releases/tag/v0.4.0)
 
 ![11toXP control window showing the Luna palettes, appearance options, and recovery controls](docs/images/11toXP-preview.png)
 
-*The v0.3.0 control window running in preview mode.*
+*The v0.4.0 control window running in preview mode.*
 
 ![Live tray icons mirrored beside the XP clock, with the native Windows tray directly below](docs/images/11toXP-tray-countdown.png)
 
 *The XP taskbar during the 15-second layout preview on a single display. The Windows tray below handles clicks.*
 
-## In development
-
-These features are available in builds from the current source. The download above is v0.3.0.
+## What's new in v0.4.0
 
 - Use **Start Menu Pins** to add and reorder local Windows shortcuts above **All Programs**. Choose **Apply** or **Repair** to preview and save the order.
 - With **Keep Windows tray visible** on a single display, live tray icons appear over the Luna background during the countdown and after applying when Windows exposes them. The native tray below handles clicks and menus.
@@ -47,7 +45,7 @@ Choose **Luna Blue**, **Luna Silver**, or **Luna Olive Green**. The taskbar and 
 - **Taskbar Button Size** switches between Large and Small. Clear **Show task button labels** for an icon-only view with accessible names. Clear **Lock the Taskbar** to resize by dragging the top grip or using the Up and Down arrow keys while the grip has focus.
 - **Displays** follows the primary display by default. Clear **Follow the primary display** to choose which connected displays get an XP bar. Selected displays remain saved when disconnected. Windows manages its native taskbars when multiple displays are connected.
 - **Apply** or **Repair** previews changes to the XP taskbar for 15 seconds. Choose **Keep** to save the layout and apply your other selected settings. Choose **Undo**, press Esc, close the dialog, or let the timer expire to return to the previous layout. A resize from the grip saves only the taskbar size.
-- **Keep Windows tray visible** is checked by default, including for older preferences. On a single display, this shows the Windows taskbar and its tray icons beneath the XP taskbar after applying. During the 15-second preview, 11toXP mirrors the live notification icons beside the XP clock when Windows exposes the tray. Use the native tray below the XP bar to click the icons. Undo or timeout restores the tray state from before the preview. For the XP-only layout, uncheck the option and select **Repair**. **Restore** returns the original Windows auto-hide setting.
+- **Keep Windows tray visible** is checked by default, including for older preferences. On a single display, 11toXP mirrors live notification icons beside the XP clock during the 15-second preview and after applying when Windows exposes the tray. Use the native Windows tray below the XP bar for clicks and menus. Undo or timeout restores the tray state from before the preview. For the XP-only layout, uncheck the option and select **Repair**. **Restore** returns the original Windows auto-hide setting.
 - In XP-only mode, select **Show Windows Tray** beside the clock to temporarily reveal the Windows tray below the XP bar. Select **Hide Windows Tray** to return to XP-only mode. The temporary reveal ends when you repair, restore, or restart 11toXP.
 - **Start with Windows** defaults to on, including when an older recovery journal has no startup preference. Uncheck it and choose **Apply** or **Repair** to use the theme for the current Windows session. 11toXP removes its sign-in entry and attempts to restore your original settings at sign-out. If restoration was interrupted, reopening 11toXP retries it. Use **Restore and Exit** for immediate cleanup.
 - **Add Shortcut** adds a local Windows shortcut (`.lnk`) to Quick Launch. Move or remove it with the same controls used for built-in entries. 11toXP keeps the original shortcut file in place and asks Windows to open it when you click its Quick Launch button.
@@ -57,7 +55,9 @@ Choose **Luna Blue**, **Luna Silver**, or **Luna Olive Green**. The taskbar and 
 
 11toXP records original settings and active preferences in `%LOCALAPPDATA%\11toXP\theme-state.json` before applying changes. It also stores control and browser window placement and local copies of generated appearance assets. Sign-in uses the app-owned `11toXP.0348C6BA` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Reopen 11toXP and select **Restore** after an interrupted operation. If no instance is running, `11toXP.exe --restore` can perform the same recovery. A running instance returns exit code 3 for this command and can restore through its window.
 
-11toXP retains saved non-wallpaper preferences in `%LOCALAPPDATA%\11toXP\preferences.json` after **Restore**.
+11toXP retains saved non-wallpaper preferences in `%LOCALAPPDATA%\11toXP\preferences.json` after **Restore**. Named appearance profiles are stored separately in `appearance-profiles.json` in the same folder.
+
+After a forced interruption, the native taskbar can stay behind the desktop even after 11toXP restores its saved settings. This also occurred with v0.3.0 on the test desktop. If the native taskbar remains inaccessible after restoring, press **Ctrl+Shift+Esc**, select **Windows Explorer** in Task Manager, and choose **Restart**. This restored the tray on the test desktop.
 
 If you use the XP-only layout, an OS build change may leave both taskbars visible until **Repair** verifies auto-hide on the new build. The app uses Windows taskbar APIs and per-user settings. It makes no network requests. The bundled runtime can extract native libraries to the .NET temporary bundle cache at launch.
 
@@ -72,8 +72,8 @@ $check = Start-Process .\bin\bundle\11toXP.exe -ArgumentList '--self-test' -Pass
 if ($check.ExitCode -ne 0) { exit $check.ExitCode }
 ```
 
-`--self-test` uses an isolated temporary journal and a simulated Windows settings adapter. It checks default wallpaper isolation, opt-in and opt-out, rollback, retry, per-component transitions, legacy journals, Explorer and sign-in recovery, startup collisions and moves, and taskbar compatibility decisions. `--preview` opens the controls with simulated theme actions for UI inspection. Live shell behavior requires an interactive Windows 11 desktop.
+`--self-test` uses an isolated temporary journal and a simulated Windows settings adapter. It checks wallpaper opt-in and opt-out, rollback, retry, per-component transitions, legacy journals, Explorer and sign-in recovery, startup collisions and moves, taskbar compatibility decisions, Start menu pin order, and profile persistence. `--preview` opens the controls with simulated theme actions for UI inspection. Live shell behavior requires an interactive Windows 11 desktop.
 
-Live checks on Windows 11 x64 covered fullscreen transitions, an Explorer restart, background recovery after process termination, and **Restore and Exit**. Wallpaper checks confirmed that leaving **Change Wallpaper** off preserves the current wallpaper, opting in applies the selected image, and opting out or restoring returns the original picture. Live sign-out and sign-in and mixed-DPI display transitions were skipped for v0.3.0.
+Live checks on Windows 11 x64 covered Start menu pin order and launch, profile persistence and staging, tray mirroring before and after **Keep**, layout rollback, and window commands for single and grouped taskbar buttons. The v0.4.0 checks confirmed that wallpaper stays unchanged with **Change Wallpaper** off. Applying a selected picture, opting out, and restoring the original picture were verified on v0.3.0. Live sign-out and sign-in and mixed-DPI display transitions were skipped.
 
 Project source uses the MIT license. The self-contained executable redistributes the .NET Windows Desktop runtime under its own license and notices. [Microsoft runtime licensing](https://github.com/dotnet/core/blob/main/license-information-windows.md)
