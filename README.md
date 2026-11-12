@@ -2,11 +2,17 @@
 
 11toXP gives your Windows 11 desktop the Windows XP Luna look, with an XP-style taskbar, Start menu, and optional file browser. One executable contains the app, its artwork, and the .NET runtime.
 
-**Download for Windows 11 x64** from [GitHub Releases](https://github.com/SeanShaffer88/11toXP/releases).
+**Stable release v0.3.0** for Windows 11 x64.
+
+[Download the portable ZIP](https://github.com/SeanShaffer88/11toXP/releases/download/v0.3.0/11toXP-v0.3.0-win-x64.zip) · [Release notes and SHA-256 checksum](https://github.com/SeanShaffer88/11toXP/releases/tag/v0.3.0)
 
 ![11toXP control window showing the Luna palettes, appearance options, and recovery controls](docs/images/11toXP-preview.png)
 
-*11toXP running in preview mode.*
+*The v0.3.0 control window running in preview mode.*
+
+![Live tray icons mirrored beside the XP clock, with the native Windows tray directly below](docs/images/11toXP-tray-countdown.png)
+
+*The XP taskbar during the 15-second layout preview on a single display. The Windows tray below handles clicks.*
 
 ## Run
 
@@ -59,6 +65,6 @@ if ($check.ExitCode -ne 0) { exit $check.ExitCode }
 
 `--self-test` uses an isolated temporary journal and a simulated Windows settings adapter. It checks default wallpaper isolation, opt-in and opt-out, rollback, retry, per-component transitions, legacy journals, Explorer and sign-in recovery, startup collisions and moves, and taskbar compatibility decisions. `--preview` opens the controls with simulated theme actions for UI inspection. Live shell behavior requires an interactive Windows 11 desktop.
 
-Live checks on Windows 11 x64 covered fullscreen transitions, an Explorer restart, background recovery after process termination, and **Restore and Exit**. The current wallpaper stayed unchanged with **Change Wallpaper** off. Real sign-out and sign-in, mixed-DPI display transitions, and live wallpaper opt-in and restore remain unverified.
+Live checks on Windows 11 x64 covered fullscreen transitions, an Explorer restart, background recovery after process termination, and **Restore and Exit**. Wallpaper checks confirmed that leaving **Change Wallpaper** off preserves the current wallpaper, opting in applies the selected image, and opting out or restoring returns the original picture. Live sign-out and sign-in and mixed-DPI display transitions were skipped for v0.3.0.
 
 Project source uses the MIT license. The self-contained executable redistributes the .NET Windows Desktop runtime under its own license and notices. [Microsoft runtime licensing](https://github.com/dotnet/core/blob/main/license-information-windows.md)
