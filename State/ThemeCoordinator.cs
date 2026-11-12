@@ -51,6 +51,9 @@ internal sealed class ThemePlatform(
     public void RestoreAppearance(AppearanceSnapshot baseline, AppearanceComponents components) =>
         appearance.Restore(baseline, components);
 
+    internal bool CanFocusXpTaskbar => shell?.CanFocusStart == true;
+    internal bool TryFocusXpTaskbar() => shell?.TryFocusStart() == true;
+
     public void StartShell(LunaVariant variant, TaskbarOptions options)
     {
         if (shell is not null && shellVariant == variant && shellOptions is { } previous &&

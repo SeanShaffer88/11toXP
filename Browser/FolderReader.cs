@@ -9,6 +9,7 @@ internal sealed record BrowserLocation(string Name, string Path, BrowserLocation
 
 internal sealed record BrowserEntry(string Name, string Path, bool Directory, bool Link, long Length, DateTime Modified)
 {
+    public override string ToString() => Name;
     public string Kind => Link ? "Link" : Directory ? "File Folder" : "File";
     public string SizeText => Directory ? "" : $"{Math.Max(1, (Length + 1023) / 1024):N0} KB";
     public string ModifiedText => Modified.ToString("g");
