@@ -6,13 +6,13 @@
 
 [Download the portable ZIP](https://github.com/SeanShaffer88/11toXP/releases/download/v0.4.0/11toXP-v0.4.0-win-x64.zip) · [Release notes and SHA-256 checksum](https://github.com/SeanShaffer88/11toXP/releases/tag/v0.4.0)
 
-![11toXP control window showing the Luna palettes, appearance options, and recovery controls](docs/images/11toXP-preview.png)
+![11toXP control window showing the Luna palettes, appearance options, and recovery controls](docs/images/11toXP-v0.4.0-control-window.png)
 
 *The v0.4.0 control window running in preview mode.*
 
-![Live tray icons mirrored beside the XP clock, with the native Windows tray directly below](docs/images/11toXP-tray-countdown.png)
+![Live notification icons beside the XP clock on the blue Luna taskbar](docs/images/11toXP-v0.4.0-luna-tray-preview.png)
 
-*The XP taskbar during the 15-second layout preview on a single display. The Windows tray below handles clicks.*
+*Close-up of the XP taskbar during the 15-second preview. The notification icons sit directly on the blue Luna background.*
 
 ## What's new in v0.4.0
 
