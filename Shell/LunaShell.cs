@@ -684,12 +684,7 @@ public sealed class LunaShell : IDisposable
                 "M 1,5 L 8,5 10,8 19,8 19,19 1,19 Z M 4,11 L 16,11 16,15 4,15 Z",
                 0xF4BD68, () => openXpExplorer!(null)),
             _ => (entry.Label, "M 3,1 L 13,1 17,5 17,19 3,19 Z M 6,13 L 11,8 11,12 14,12 14,6 8,6 8,9 4,13 Z",
-                0xE8F4FF, () =>
-                {
-                    string path = entry.ShortcutPath!;
-                    QuickLaunchEntry.RequireAvailableFile(path);
-                    StartMenu.LaunchFile(path);
-                })
+                0xE8F4FF, () => StartMenu.LaunchShortcut(entry))
         };
 
     private Button CreateQuickLaunchButton(string label, string geometry, uint color, Action click)
@@ -763,14 +758,28 @@ public sealed class LunaShell : IDisposable
             }
 
             var target = entry.IsGroup ? new MenuItem { Header = window.Title } : null;
+            if (target is not null)
+                AutomationProperties.SetAutomationId(target, "TaskWindowGroupMember");
             ItemCollection commands = target?.Items ?? context.Items;
-            commands.Add(MenuCommand("Switch To", () => CompleteWindowAction(WindowTasks.Activate(window))));
-            commands.Add(MenuCommand("Minimize", () => CompleteWindowAction(WindowTasks.Minimize(window))));
+            var switchTo = MenuCommand("Switch To", () => CompleteWindowAction(WindowTasks.Activate(window)));
+            AutomationProperties.SetAutomationId(switchTo, "TaskWindowSwitchTo");
+            commands.Add(switchTo);
+            commands.Add(WindowCommand(window, TaskWindowCommand.Restore));
+            commands.Add(WindowCommand(window, TaskWindowCommand.Minimize));
+            commands.Add(WindowCommand(window, TaskWindowCommand.Maximize));
             commands.Add(new Separator());
-            commands.Add(MenuCommand("Close", () => CompleteWindowAction(WindowTasks.Close(window))));
+            commands.Add(WindowCommand(window, TaskWindowCommand.Close));
             if (target is not null)
                 context.Items.Add(target);
         }
+    }
+
+    private MenuItem WindowCommand(TaskWindow window, TaskWindowCommand command)
+    {
+        var item = MenuCommand(command.ToString(), () => CompleteWindowAction(WindowTasks.Execute(window, command)));
+        item.IsEnabled = WindowTasks.CanExecute(window, command);
+        AutomationProperties.SetAutomationId(item, $"TaskWindow{command}");
+        return item;
     }
 
     private void CompleteWindowAction(bool succeeded)
@@ -928,10 +937,12 @@ public sealed class LunaShell : IDisposable
                 return;
             double scale = DpiScale(source.Handle);
             int pixelWidth = Math.Min((int)Math.Round(397 * scale), monitor.Bounds.Right - area.Left);
-            int pixelHeight = Math.Min((int)Math.Round(335 * scale), area.Top - monitor.Bounds.Top);
+            double menuHeight = StartMenu.PreferredHeight(options.StartMenuPins?.Length ?? 0);
+            int pixelHeight = Math.Min((int)Math.Round(menuHeight * scale), area.Top - monitor.Bounds.Top);
             if (pixelWidth <= 0 || pixelHeight <= 0)
                 return;
-            var opened = new StartMenu(bar, visuals, openControl, showWindowsTaskbar, openXpExplorer, options.UseXpExplorer)
+            var opened = new StartMenu(bar, visuals, openControl, showWindowsTaskbar, openXpExplorer, options.UseXpExplorer,
+                options.StartMenuPins)
             {
                 Width = pixelWidth / scale,
                 Height = pixelHeight / scale,

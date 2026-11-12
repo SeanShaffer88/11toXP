@@ -89,6 +89,23 @@
       <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
         <StackPanel Margin="22,13,22,6" KeyboardNavigation.TabNavigation="Continue">
           <TextBlock Text="Windows XP Appearance" FontSize="23" FontWeight="Bold"/>
+          <Expander x:Name="ProfileSettings" Header="Appearance profiles" Margin="0,5,0,0"
+                    AutomationProperties.AutomationId="AppearanceProfiles" Expanded="AppearanceProfilesExpanded">
+            <DockPanel Margin="19,3,0,5">
+              <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="5,0,0,0">
+                <Button x:Name="LoadProfile" Content="Load" Margin="0,0,4,0"
+                        AutomationProperties.AutomationId="AppearanceProfileLoad" Click="LoadProfileClick"/>
+                <Button x:Name="SaveProfile" Content="Save" Margin="0,0,4,0"
+                        AutomationProperties.AutomationId="AppearanceProfileSave" Click="SaveProfileClick"/>
+                <Button x:Name="DeleteProfile" Content="Delete"
+                        AutomationProperties.AutomationId="AppearanceProfileDelete" Click="DeleteProfileClick"/>
+              </StackPanel>
+              <ComboBox x:Name="ProfileName" IsEditable="True" IsTextSearchEnabled="False"
+                        ToolTip="Type a name to save the current appearance settings, or choose a saved profile."
+                        AutomationProperties.Name="Appearance profile name"
+                        AutomationProperties.AutomationId="AppearanceProfileName"/>
+            </DockPanel>
+          </Expander>
           <UniformGrid Columns="3" Margin="0,8,0,8">
             <RadioButton x:Name="BlueVariant" Content="Luna Blue" GroupName="LunaVariant"
                          MinHeight="28" AutomationProperties.AutomationId="LunaBlue" Checked="VariantChanged"/>
@@ -211,6 +228,37 @@
                 </UniformGrid>
               </StackPanel>
             </Grid>
+            <Expander Header="Start menu pins" Margin="0,8,0,0"
+                      AutomationProperties.AutomationId="StartMenuPins">
+              <Grid Margin="19,3,0,0">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="228"/>
+                </Grid.ColumnDefinitions>
+                <ListBox x:Name="PinList" MinHeight="62" MaxHeight="98" Margin="0,0,10,0"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled" DisplayMemberPath="Label"
+                         SelectionChanged="StartMenuPinSelectionChanged"
+                         AutomationProperties.Name="Start menu pins" AutomationProperties.AutomationId="StartMenuPinItems">
+                  <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem">
+                      <Setter Property="ToolTip" Value="{Binding ShortcutPath}"/>
+                    </Style>
+                  </ListBox.ItemContainerStyle>
+                </ListBox>
+                <StackPanel Grid.Column="1">
+                  <Button x:Name="AddPin" Content="Add Shortcut…" Margin="0,0,0,4"
+                          AutomationProperties.AutomationId="StartMenuPinAdd" Click="StartMenuPinAddClick"/>
+                  <UniformGrid Columns="3">
+                    <Button x:Name="RemovePin" Content="Remove" Padding="4,3" Margin="0,0,4,0"
+                            AutomationProperties.AutomationId="StartMenuPinRemove" Click="StartMenuPinRemoveClick"/>
+                    <Button x:Name="MovePinUp" Content="Move Up" Padding="4,3" Margin="0,0,4,0"
+                            AutomationProperties.AutomationId="StartMenuPinUp" Click="StartMenuPinUpClick"/>
+                    <Button x:Name="MovePinDown" Content="Move Down" Padding="4,3"
+                            AutomationProperties.AutomationId="StartMenuPinDown" Click="StartMenuPinDownClick"/>
+                  </UniformGrid>
+                </StackPanel>
+              </Grid>
+            </Expander>
           </StackPanel>
           <WrapPanel Margin="0,0,0,8">
             <Button Content="Open XP Explorer" Margin="0,0,8,0"

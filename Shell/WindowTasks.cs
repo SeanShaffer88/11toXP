@@ -22,7 +22,12 @@ internal sealed class WindowTasks : IDisposable
     private const uint Root = 2;
     private const uint RootOwner = 3;
     private const uint Owner = 4;
+    private const int Style = -16;
     private const int ExtendedStyle = -20;
+    private const int MinimizeBox = 0x00020000;
+    private const int MaximizeBox = 0x00010000;
+    private const uint SystemCommandMessage = 0x0112;
+    private const uint MenuDisabled = 0x0003;
     private const int ToolWindow = 0x80;
     private const int AppWindow = 0x40000;
     private const int NoActivateWindow = 0x08000000;
@@ -245,17 +250,46 @@ internal sealed class WindowTasks : IDisposable
         return ShellNative.SetForegroundWindow(target);
     }
 
-    internal static bool Minimize(TaskWindow task) =>
+    private static bool Minimize(TaskWindow task) =>
         IsCurrent(task) && ShellNative.ShowWindowAsync(task.Handle, 6);
 
-    internal static bool Close(TaskWindow task)
+    internal static bool CanExecute(TaskWindow task, TaskWindowCommand command)
     {
-        if (!IsCurrent(task))
+        if (!IsCurrent(task) || !ShellNative.IsWindowEnabled(task.Handle))
             return false;
+
+        int style = ShellNative.GetWindowLongW(task.Handle, Style);
+        bool minimized = ShellNative.IsIconic(task.Handle);
+        bool maximized = ShellNative.IsZoomed(task.Handle);
+        return command switch
+        {
+            TaskWindowCommand.Restore => minimized || maximized,
+            TaskWindowCommand.Minimize => !minimized && (style & MinimizeBox) != 0,
+            TaskWindowCommand.Maximize => (!maximized || minimized) && (style & MaximizeBox) != 0,
+            TaskWindowCommand.Close => CanClose(task.Handle),
+            _ => false
+        };
+    }
+
+    internal static bool Execute(TaskWindow task, TaskWindowCommand command)
+    {
+        if (!CanExecute(task, command))
+            return false;
+
         var title = new StringBuilder(512);
         return ShellNative.GetWindowTextW(task.Handle, title, title.Capacity) != 0 &&
                title.ToString().Trim() == task.Title &&
-               ShellNative.PostMessageW(task.Handle, 0x0010, 0, 0);
+               IsCurrent(task) &&
+               ShellNative.PostMessageW(task.Handle, SystemCommandMessage, (nint)command, 0);
+    }
+
+    private static bool CanClose(nint window)
+    {
+        nint menu = ShellNative.GetSystemMenu(window, false);
+        if (menu == 0)
+            return true;
+        uint state = ShellNative.GetMenuState(menu, (uint)TaskWindowCommand.Close, 0);
+        return state != uint.MaxValue && (state & MenuDisabled) == 0;
     }
 
     private static bool IsCurrent(TaskWindow task) =>
@@ -273,6 +307,14 @@ internal sealed class WindowTasks : IDisposable
             ShellNative.UnhookWinEvent(hook);
         hooks.Clear();
     }
+}
+
+internal enum TaskWindowCommand
+{
+    Minimize = 0xF020,
+    Maximize = 0xF030,
+    Close = 0xF060,
+    Restore = 0xF120
 }
 
 internal sealed record TaskWindow(nint Handle, uint Process, string Title, ImageSource? Icon, TaskIdentity? Identity = null);

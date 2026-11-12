@@ -29,6 +29,9 @@ public partial class ControlWindow : Window
     private bool hasDisplaySelection;
     private readonly HashSet<string> selectedDisplayIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly ObservableCollection<QuickLaunchEntry> launchItems = [];
+    private readonly ObservableCollection<QuickLaunchEntry> pinItems = [];
+    private readonly AppearanceProfileStore? profileStore;
+    private AppearanceProfile[]? profiles;
     private readonly Dictionary<string, object> normalBrushes = [];
     private static readonly QuickLaunchEntry[] ShortcutChoices =
     [
@@ -41,6 +44,8 @@ public partial class ControlWindow : Window
     {
         this.app = app;
         this.preview = preview;
+        if (!preview && app.StateDirectory is { } profileDirectory)
+            profileStore = new AppearanceProfileStore(profileDirectory);
         InitializeComponent();
         foreach (var key in new[]
         {
@@ -49,6 +54,7 @@ public partial class ControlWindow : Window
         })
             normalBrushes.Add(key, Resources[key]);
         LaunchList.ItemsSource = launchItems;
+        PinList.ItemsSource = pinItems;
         LoadPreferences(app.Coordinator?.State?.Preferences ?? (preview ? ThemePreferences.Default : app.SavedPreferences));
         ApplyHighContrast();
         SystemParameters.StaticPropertyChanged += SystemParametersChanged;
@@ -76,7 +82,8 @@ public partial class ControlWindow : Window
         RestoreAction.IsEnabled = preview ? previewApplied : state is not null;
         RestoreAndExitAction.IsEnabled = preview || coordinator is not null;
         RefreshTaskbarFocus();
-        Components.IsEnabled = TaskbarSettings.IsEnabled = preview || (coordinator is not null && (state is null || active));
+        Components.IsEnabled = TaskbarSettings.IsEnabled = ProfileSettings.IsEnabled =
+            preview || (coordinator is not null && (state is null || active));
         WallpaperOptIn.IsEnabled = preview || (coordinator is not null && (state is null || active));
         WallpaperPicker.IsEnabled = WallpaperOptIn.IsEnabled && WallpaperOptIn.IsChecked == true;
         ShellValue.Text = preview && active ? "XP taskbar preview" : coordinator?.ShellStatus ?? "Windows taskbar";
@@ -267,6 +274,7 @@ public partial class ControlWindow : Window
         var taskbar = new TaskbarOptions(grouping, builtIns, UseXpExplorer.IsChecked == true)
         {
             OrderedQuickLaunch = launchItems.Count == builtIns.Length ? null : [.. launchItems],
+            StartMenuPins = pinItems.Count == 0 ? null : [.. pinItems],
             ButtonSize = TaskbarButtonSizeChoice.SelectedIndex == 1 ? TaskbarButtonSize.Small : TaskbarButtonSize.Large,
             ShowLabels = ShowTaskbarLabels.IsChecked == true,
             IsLocked = LockTaskbar.IsChecked == true,
@@ -299,11 +307,76 @@ public partial class ControlWindow : Window
         ShowTaskbarLabels.IsChecked = preferences.Taskbar.ShowLabels;
         LockTaskbar.IsChecked = preferences.Taskbar.IsLocked;
         LoadDisplayChoices(preferences.Taskbar.DisplayIds);
+        launchItems.Clear();
         foreach (var shortcut in preferences.Taskbar.EffectiveQuickLaunch)
             launchItems.Add(shortcut);
         LaunchList.SelectedIndex = launchItems.Count > 0 ? 0 : -1;
         UpdateQuickLaunchControls();
+        pinItems.Clear();
+        foreach (var pin in preferences.Taskbar.StartMenuPins ?? [])
+            pinItems.Add(pin);
+        PinList.SelectedIndex = pinItems.Count > 0 ? 0 : -1;
+        UpdatePinControls();
     }
+
+    private void AppearanceProfilesExpanded(object sender, RoutedEventArgs e)
+    {
+        if (profiles is not null)
+            return;
+        try
+        {
+            SetProfiles(profileStore?.Load() ?? [], "");
+        }
+        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException)
+        {
+            SaveProfile.IsEnabled = LoadProfile.IsEnabled = DeleteProfile.IsEnabled = false;
+            AnnounceStatus(error.Message);
+        }
+    }
+
+    private void SetProfiles(AppearanceProfile[] values, string name)
+    {
+        profiles = values;
+        ProfileName.ItemsSource = values.Select(profile => profile.Name).ToArray();
+        ProfileName.Text = name;
+        SaveProfile.IsEnabled = true;
+        LoadProfile.IsEnabled = DeleteProfile.IsEnabled = values.Length > 0;
+    }
+
+    private AppearanceProfile? FindProfile(string name) =>
+        profiles?.FirstOrDefault(profile => string.Equals(profile.Name, name, StringComparison.OrdinalIgnoreCase));
+
+    private AppearanceProfile SelectedProfile() => FindProfile(ProfileName.Text.Trim()) ??
+        throw new InvalidOperationException("Choose a saved appearance profile.");
+
+    private void LoadProfileClick(object sender, RoutedEventArgs e) => PerformOperation(() =>
+        LoadPreferences(SelectedProfile().ToPreferences(StartWithWindows.IsChecked == true)),
+        "Appearance profile loaded. Use Apply or Repair to save your changes.");
+
+    private void SaveProfileClick(object sender, RoutedEventArgs e) => PerformOperation(() =>
+    {
+        var profile = AppearanceProfile.Capture(ProfileName.Text, SelectedPreferences());
+        var saved = profiles ?? throw new InvalidOperationException("Appearance profiles could not be read.");
+        var existing = FindProfile(profile.Name);
+        if (existing is null && saved.Length >= AppearanceProfileStore.MaximumProfiles)
+            throw new InvalidOperationException($"Save up to {AppearanceProfileStore.MaximumProfiles} appearance profiles.");
+        if (existing is not null && MessageBox.Show(this, $"Replace the appearance profile \"{existing.Name}\"?",
+                "11toXP", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No) != MessageBoxResult.Yes)
+            return "Appearance profile kept.";
+        AppearanceProfile[] updated = existing is null ? [.. saved, profile] :
+            saved.Select(item => item == existing ? profile : item).ToArray();
+        profileStore?.Save(updated);
+        SetProfiles(updated, profile.Name);
+        return "Appearance profile saved.";
+    });
+
+    private void DeleteProfileClick(object sender, RoutedEventArgs e) => PerformOperation(() =>
+    {
+        var selected = SelectedProfile();
+        var updated = profiles!.Where(profile => profile != selected).ToArray();
+        profileStore?.Save(updated);
+        SetProfiles(updated, "");
+    }, "Appearance profile deleted.");
 
     private string[]? SelectedDisplays()
     {
@@ -449,11 +522,15 @@ public partial class ControlWindow : Window
 
     private void QuickLaunchAddFileClick(object sender, RoutedEventArgs e)
     {
-        if (launchItems.Count >= TaskbarOptions.MaximumQuickLaunchItems)
-            return;
+        if (launchItems.Count < TaskbarOptions.MaximumQuickLaunchItems)
+            ChooseShortcut("Add Quick Launch Shortcut", AddQuickLaunchItem);
+    }
+
+    private void ChooseShortcut(string title, Action<QuickLaunchEntry> add)
+    {
         var dialog = new OpenFileDialog
         {
-            Title = "Add Quick Launch Shortcut",
+            Title = title,
             Filter = "Windows shortcuts (*.lnk)|*.lnk",
             DereferenceLinks = false,
             CheckFileExists = true
@@ -461,7 +538,7 @@ public partial class ControlWindow : Window
         try
         {
             if (dialog.ShowDialog(this) == true)
-                AddQuickLaunchItem(QuickLaunchEntry.FromFile(dialog.FileName));
+                add(QuickLaunchEntry.FromFile(dialog.FileName));
         }
         catch (Exception error) when (error is IOException or InvalidOperationException or UnauthorizedAccessException or Win32Exception)
         {
@@ -487,11 +564,7 @@ public partial class ControlWindow : Window
 
     private void QuickLaunchRemoveClick(object sender, RoutedEventArgs e)
     {
-        var index = LaunchList.SelectedIndex;
-        if (index < 0)
-            return;
-        launchItems.RemoveAt(index);
-        LaunchList.SelectedIndex = Math.Min(index, launchItems.Count - 1);
+        RemoveSelectedShortcut(launchItems, LaunchList);
         UpdateQuickLaunchControls();
     }
 
@@ -500,13 +573,7 @@ public partial class ControlWindow : Window
 
     private void MoveQuickLaunch(int direction)
     {
-        var from = LaunchList.SelectedIndex;
-        var to = from + direction;
-        if (from < 0 || to < 0 || to >= launchItems.Count)
-            return;
-        launchItems.Move(from, to);
-        LaunchList.SelectedIndex = to;
-        LaunchList.ScrollIntoView(launchItems[to]);
+        MoveSelectedShortcut(launchItems, LaunchList, direction);
         UpdateQuickLaunchButtons();
     }
 
@@ -532,6 +599,73 @@ public partial class ControlWindow : Window
         RemoveShortcut.IsEnabled = selected >= 0;
         MoveShortcutUp.IsEnabled = selected > 0;
         MoveShortcutDown.IsEnabled = selected >= 0 && selected < launchItems.Count - 1;
+    }
+
+    private void StartMenuPinAddClick(object sender, RoutedEventArgs e)
+    {
+        if (pinItems.Count < TaskbarOptions.MaximumStartMenuPins)
+            ChooseShortcut("Add Start Menu Shortcut", AddStartMenuPin);
+    }
+
+    private void AddStartMenuPin(QuickLaunchEntry shortcut)
+    {
+        if (pinItems.Any(pin => pin.SameAs(shortcut)))
+        {
+            AnnounceStatus("This shortcut is already pinned to the Start menu.");
+            return;
+        }
+        pinItems.Add(shortcut);
+        PinList.SelectedItem = shortcut;
+        PinList.ScrollIntoView(shortcut);
+        UpdatePinControls();
+        AnnounceStatus("Shortcut pinned. Use Apply or Repair to save your changes.");
+    }
+
+    private void StartMenuPinRemoveClick(object sender, RoutedEventArgs e)
+    {
+        RemoveSelectedShortcut(pinItems, PinList);
+        UpdatePinControls();
+    }
+
+    private void StartMenuPinUpClick(object sender, RoutedEventArgs e) => MoveStartMenuPin(-1);
+    private void StartMenuPinDownClick(object sender, RoutedEventArgs e) => MoveStartMenuPin(1);
+    private void StartMenuPinSelectionChanged(object sender, SelectionChangedEventArgs e) => UpdatePinControls();
+
+    private void MoveStartMenuPin(int direction)
+    {
+        MoveSelectedShortcut(pinItems, PinList, direction);
+        UpdatePinControls();
+    }
+
+    private void UpdatePinControls()
+    {
+        if (MovePinDown is null)
+            return;
+        int selected = PinList.SelectedIndex;
+        AddPin.IsEnabled = pinItems.Count < TaskbarOptions.MaximumStartMenuPins;
+        RemovePin.IsEnabled = selected >= 0;
+        MovePinUp.IsEnabled = selected > 0;
+        MovePinDown.IsEnabled = selected >= 0 && selected < pinItems.Count - 1;
+    }
+
+    private static void RemoveSelectedShortcut(ObservableCollection<QuickLaunchEntry> entries, ListBox list)
+    {
+        int index = list.SelectedIndex;
+        if (index < 0)
+            return;
+        entries.RemoveAt(index);
+        list.SelectedIndex = Math.Min(index, entries.Count - 1);
+    }
+
+    private static void MoveSelectedShortcut(ObservableCollection<QuickLaunchEntry> entries, ListBox list, int direction)
+    {
+        int from = list.SelectedIndex;
+        int to = from + direction;
+        if (from < 0 || to < 0 || to >= entries.Count)
+            return;
+        entries.Move(from, to);
+        list.SelectedIndex = to;
+        list.ScrollIntoView(entries[to]);
     }
 
     private string? SelectedImage() => WallpaperOptIn.IsChecked != true ? null :

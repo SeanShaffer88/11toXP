@@ -16,6 +16,8 @@ internal sealed class StartMenu : Window
 {
     private const int MaximumShortcuts = 2048;
     private const int MaximumFolderDepth = 12;
+    private const double CommandHeight = 37;
+    private const double DividerVerticalMargin = 5;
     private readonly LunaVisuals visuals;
     private readonly DockPanel root = new();
     private readonly ScrollViewer menuBody = new()
@@ -30,8 +32,11 @@ internal sealed class StartMenu : Window
 
     internal event Action? EscapeDismissed;
 
+    internal static double PreferredHeight(int pinCount) =>
+        335 + pinCount * CommandHeight + (pinCount > 0 ? 1 + 2 * DividerVerticalMargin : 0);
+
     internal StartMenu(Window owner, LunaVisuals visuals, Action openControl, Action? showWindowsTaskbar,
-        Action<string?>? openXpExplorer = null, bool useXpExplorer = false)
+        Action<string?>? openXpExplorer = null, bool useXpExplorer = false, IReadOnlyList<QuickLaunchEntry>? pins = null)
     {
         Owner = owner;
         this.visuals = visuals;
@@ -81,6 +86,15 @@ internal sealed class StartMenu : Window
         AddCommand(left, "Settings", () => LaunchFile("ms-settings:"), "settings");
         AddCommand(left, "Run…", () => InvokeShell("FileRun"), "run");
         AddDivider(left);
+        if (pins is { Count: > 0 })
+        {
+            foreach (var pin in pins)
+            {
+                var button = AddCommand(left, pin.Label, () => LaunchShortcut(pin), "shortcut", emphasized: true);
+                AutomationProperties.SetAutomationId(button, "StartMenuPin");
+            }
+            AddDivider(left);
+        }
         AddCommand(left, "All Programs  ›", ShowPrograms, "programs", closeBeforeAction: false, emphasized: true);
 
         Action<string?>? openFolder = useXpExplorer ? openXpExplorer : null;
@@ -183,7 +197,7 @@ internal sealed class StartMenu : Window
             FontWeight = emphasized ? FontWeights.Bold : FontWeights.Normal
         });
         Button button = visuals.NewButton(name, content, visuals.MenuButtonStyle, Brushes.Transparent);
-        button.MinHeight = 37;
+        button.MinHeight = CommandHeight;
         button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
         button.ToolTip = name;
         button.Click += (_, _) => Execute(action, closeBeforeAction);
@@ -210,7 +224,7 @@ internal sealed class StartMenu : Window
         parent.Children.Add(new Border
         {
             Height = 1,
-            Margin = new Thickness(9, 5, 9, 5),
+            Margin = new Thickness(9, DividerVerticalMargin, 9, DividerVerticalMargin),
             Background = visuals.HighContrast ? SystemColors.WindowTextBrush : LunaVisuals.Solid(0xABC7E8)
         });
     }
@@ -400,6 +414,14 @@ internal sealed class StartMenu : Window
     internal static void LaunchFile(string path)
     {
         Process.Start(new ProcessStartInfo(path) { UseShellExecute = true })?.Dispose();
+    }
+
+    internal static void LaunchShortcut(QuickLaunchEntry entry)
+    {
+        if (!entry.IsValid() || entry.ShortcutPath is not { } path)
+            throw new InvalidOperationException("Choose a Windows shortcut (.lnk) on a local drive.");
+        QuickLaunchEntry.RequireAvailableFile(path);
+        LaunchFile(path);
     }
 
     private static void InvokeShell(string method, params object[] arguments)
