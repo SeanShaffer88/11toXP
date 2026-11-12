@@ -124,6 +124,10 @@
                       AutomationProperties.AutomationId="UseXpExplorer"/>
             <CheckBox Grid.Row="2" x:Name="StartWithWindows" Content="Start with Windows" MinHeight="26"
                       AutomationProperties.AutomationId="StartWithWindows"/>
+            <CheckBox Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" x:Name="KeepWindowsTrayVisible"
+                      Content="Keep Windows tray visible" MinHeight="26"
+                      ToolTip="Keep the Windows taskbar and its notification icons visible alongside the XP taskbar."
+                      AutomationProperties.AutomationId="KeepWindowsTrayVisible"/>
           </Grid>
           <DockPanel Margin="0,2,0,8" LastChildFill="True">
             <Button x:Name="WallpaperPicker" DockPanel.Dock="Right" Content="Choose Image…"

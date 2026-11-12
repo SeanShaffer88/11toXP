@@ -11,6 +11,7 @@ namespace LunaDesktop.State;
 internal static class ThemeChecks
 {
     private const string Image = @"C:\Selected.jpg";
+    private static ThemePreferences XpTaskbarOnly => ThemePreferences.Default with { KeepWindowsTrayVisible = false };
 
     public static int Run()
     {
@@ -22,6 +23,9 @@ internal static class ThemeChecks
             WithSession(InterruptedRestore);
             WithSession(BuildChanged);
             WithSession(AlreadyAutoHides);
+            WithSession(WindowsTrayDefault);
+            WithSession(WindowsTrayModeChanges);
+            WithSession(WindowsTrayUnavailable);
             WithSession(MovedExecutable);
             WithSession(SignInCollision);
             WithSession(SessionOnlyLifecycle);
@@ -47,7 +51,7 @@ internal static class ThemeChecks
     {
         app.Resume();
         Require(platform.ShellCalls == 0, "Sign-in cannot enable an unapplied theme.");
-        app.Apply(null);
+        app.Apply(null, XpTaskbarOnly);
         Require(platform.ShellWasStartedBeforeAutoHide, "Start the custom taskbar before hiding the stock taskbar.");
         app.Repair(null);
         app.ShowWindowsTaskbar();
@@ -103,7 +107,7 @@ internal static class ThemeChecks
 
     private static void BuildChanged(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
     {
-        app.Apply(null);
+        app.Apply(null, XpTaskbarOnly);
         platform.Build++;
         app.Resume();
         Require(platform.Shell && !platform.AutoHide, "Keep stock taskbar visible on an unverified build.");
@@ -129,13 +133,87 @@ internal static class ThemeChecks
     private static void AlreadyAutoHides(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
     {
         platform.SetAutoHide(true);
-        app.Apply(null);
+        app.Apply(null, XpTaskbarOnly);
         Require(journal.Load()?.OriginalAutoHide is null, "An already enabled auto-hide preference is not owned.");
         platform.SetAutoHide(false);
         app.Resume();
         Require(!platform.AutoHide, "Automatic repair preserves a preference we never managed.");
         app.Restore();
         Require(!platform.AutoHide, "Restore preserves a user's subsequent auto-hide change.");
+    }
+
+    private static void WindowsTrayDefault(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
+    {
+        app.Apply(null);
+        Require(platform.Shell && !platform.AutoHide && platform.AutoHideWrites == 0 &&
+            journal.Load() is { Preferences.KeepWindowsTrayVisible: true, OriginalAutoHide: null },
+            "The default keeps an already visible Windows taskbar untouched.");
+        app.Restore();
+
+        platform.SetAutoHide(true);
+        platform.BeforeSetAutoHide = enabled =>
+        {
+            if (!enabled)
+                Require(journal.Load()?.OriginalAutoHide == true, "Persist the original auto-hide setting before exposing the tray.");
+        };
+        app.Apply(null);
+        Require(platform.Shell && !platform.AutoHide && journal.Load()?.OriginalAutoHide == true,
+            "The default exposes the Windows tray even when auto-hide was previously enabled.");
+        app.ShowWindowsTaskbar();
+        Require(!platform.Shell && platform.AutoHide && journal.Load()?.OriginalAutoHide is null,
+            "Pausing the XP taskbar restores the previous native auto-hide setting.");
+        app.Repair(null);
+        app.RecoverShellFault(new InvalidOperationException("Injected shell fault."));
+        Require(!platform.Shell && platform.AutoHide && journal.Load()?.OriginalAutoHide is null,
+            "Recovering a shell fault restores the previous native auto-hide setting.");
+        app.Repair(null);
+        app.Restore();
+        Require(!platform.Shell && platform.AutoHide && journal.Load() is null,
+            "Restoring an active tray-visible profile returns to the previously auto-hidden taskbar.");
+    }
+
+    private static void WindowsTrayModeChanges(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
+    {
+        app.Apply(null, XpTaskbarOnly);
+        Require(platform.AutoHide && journal.Load()?.OriginalAutoHide == false, "XP-only mode owns the change.");
+        app.Repair(null, ThemePreferences.Default);
+        Require(!platform.AutoHide && journal.Load()?.OriginalAutoHide is null,
+            "Switching to the visible tray returns to the original visible setting and releases ownership.");
+        app.Restore();
+
+        platform.SetAutoHide(true);
+        app.Apply(null);
+        app.Repair(null, XpTaskbarOnly);
+        Require(platform.AutoHide && journal.Load()?.OriginalAutoHide is null,
+            "Switching to XP-only returns to the original hidden setting and releases ownership.");
+        app.Repair(null, ThemePreferences.Default);
+        Require(!platform.AutoHide && journal.Load()?.OriginalAutoHide == true,
+            "Switching back to the visible tray records the unchanged original baseline.");
+        app.Restore();
+        Require(platform.AutoHide, "Mode changes preserve the user's original setting.");
+    }
+
+    private static void WindowsTrayUnavailable(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
+    {
+        platform.SetAutoHide(true);
+        platform.FailingAutoHideTarget = false;
+        app.Apply(null);
+        Require(platform.AutoHide && journal.Load()?.OriginalAutoHide == true &&
+            app.CompatibilityStatus.Contains("could not"), "An unverified tray write retains ownership and reports compatibility.");
+        platform.FailingAutoHideTarget = null;
+        app.Repair(null);
+        Require(!platform.AutoHide, "Repair retries keeping the Windows tray visible.");
+        var priorWrites = platform.AutoHideWrites;
+        platform.AutoHideAvailable = false;
+        app.Repair(null);
+        Require(platform.AutoHideWrites == priorWrites && journal.Load()?.OriginalAutoHide == true,
+            "Repair does not write an unknown auto-hide setting or discard its baseline.");
+        ExpectFailure(app.Restore);
+        Require(platform.AutoHideWrites == priorWrites && journal.Load()?.OriginalAutoHide == true,
+            "Restore also leaves unknown auto-hide untouched and retains recovery state.");
+        platform.AutoHideAvailable = true;
+        app.Restore();
+        Require(platform.AutoHide && journal.Load() is null, "Restore retries when the native taskbar is available again.");
     }
 
     private static void SignInCollision(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
@@ -279,7 +357,7 @@ internal static class ThemeChecks
 
         var shortcuts = new[] { QuickLaunchItem.XpExplorer, QuickLaunchItem.Settings };
         var selected = new ThemePreferences(LunaVariant.Silver, true, AppearanceComponents.Icons | AppearanceComponents.Sounds,
-            new TaskbarOptions(TaskGrouping.Always, shortcuts, true));
+            new TaskbarOptions(TaskGrouping.Always, shortcuts, true)) { KeepWindowsTrayVisible = false };
         app.Repair(null, selected);
         shortcuts[0] = QuickLaunchItem.FileExplorer;
         Require(platform.AppearanceCaptures.SequenceEqual([AppearanceComponents.Icons, AppearanceComponents.Sounds]) &&
@@ -360,10 +438,11 @@ internal static class ThemeChecks
             Require(platform.AppearanceRestores.SequenceEqual([AppearanceComponents.All]) && journal.Load() is null,
                 "Legacy ownership remains restorable.");
 
-            app.Apply(null);
+            app.Apply(null, XpTaskbarOnly);
             var path = Path.Combine(directory.FullName, "theme-state.json");
             var record = JsonNode.Parse(File.ReadAllText(path))!;
             record["Preferences"]!.AsObject().Remove("StartWithWindows");
+            record["Preferences"]!.AsObject().Remove("KeepWindowsTrayVisible");
             File.WriteAllText(path, record.ToJsonString());
             platform.Registered = null;
             var reopened = new ThemeCoordinator(journal, platform);
@@ -371,6 +450,9 @@ internal static class ThemeChecks
             reopened.Resume();
             Require(reopened.State?.Preferences.StartWithWindows == true && platform.Registered == platform.CurrentCommand,
                 "An existing preferences object without the startup setting keeps sign-in enabled.");
+            Require(reopened.State?.Preferences.KeepWindowsTrayVisible == true && !platform.AutoHide &&
+                journal.Load()?.OriginalAutoHide is null,
+                "A legacy profile restores its previously visible Windows taskbar and releases its auto-hide ownership.");
             reopened.Restore();
         }
         finally
@@ -458,6 +540,10 @@ internal static class ThemeChecks
         public bool ShellWasStartedBeforeAutoHide { get; private set; }
         public int ShellCalls { get; private set; }
         public int AutoHideReads { get; private set; }
+        public int AutoHideWrites { get; private set; }
+        public bool AutoHideAvailable { get; set; } = true;
+        public bool? FailingAutoHideTarget { get; set; }
+        public Action<bool>? BeforeSetAutoHide { get; set; }
         public LunaVariant Variant { get; private set; }
         public int Captures { get; private set; }
         public int WallpaperCalls { get; private set; }
@@ -499,10 +585,14 @@ internal static class ThemeChecks
         public bool? ReadAutoHide()
         {
             AutoHideReads++;
-            return AutoHide;
+            return AutoHideAvailable ? AutoHide : null;
         }
         public bool SetAutoHide(bool enabled)
         {
+            AutoHideWrites++;
+            BeforeSetAutoHide?.Invoke(enabled);
+            if (enabled == FailingAutoHideTarget)
+                return false;
             if (enabled)
                 ShellWasStartedBeforeAutoHide = Shell;
             AutoHide = enabled;

@@ -475,6 +475,16 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
         }
         ShellStatus = "XP taskbar active";
         var current = platform.ReadAutoHide();
+        if (current is null)
+        {
+            CompatibilityStatus = "Windows taskbar auto-hide unavailable";
+            return;
+        }
+        if (state.Preferences.KeepWindowsTrayVisible)
+        {
+            ShowWindowsTray(state, current.Value);
+            return;
+        }
         if (!verifyBuild && state.AutoHideBuild != platform.Build)
         {
             if (state.OriginalAutoHide is not null)
@@ -485,10 +495,12 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
         }
         else if (current == true)
         {
+            if (state.OriginalAutoHide == true)
+                SaveAutoHideBaseline(state, null);
             SaveAutoHideBuild(state, platform.Build);
             CompatibilityStatus = $"Auto-hide verified on build {platform.Build}";
         }
-        else if (current == false)
+        else
         {
             if (!verifyBuild && state.OriginalAutoHide is null)
             {
@@ -496,12 +508,11 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
                 return;
             }
             if (state.OriginalAutoHide is null)
-            {
-                state.OriginalAutoHide = false;
-                journal.Save(state);
-            }
+                SaveAutoHideBaseline(state, false);
             if (platform.SetAutoHide(true))
             {
+                if (state.OriginalAutoHide == true)
+                    SaveAutoHideBaseline(state, null);
                 SaveAutoHideBuild(state, platform.Build);
                 CompatibilityStatus = $"Auto-hide verified on build {platform.Build}";
             }
@@ -512,31 +523,57 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
                 CompatibilityStatus = "Windows kept its taskbar visible";
             }
         }
-        else
+    }
+
+    private void ShowWindowsTray(ThemeState state, bool autoHide)
+    {
+        if (autoHide)
         {
-            CompatibilityStatus = "Windows taskbar auto-hide unavailable";
+            if (state.OriginalAutoHide is null)
+                SaveAutoHideBaseline(state, true);
+            if (!platform.SetAutoHide(false))
+            {
+                CompatibilityStatus = "Windows could not keep its taskbar visible";
+                return;
+            }
         }
+        if (state.OriginalAutoHide == false)
+            SaveAutoHideBaseline(state, null);
+        CompatibilityStatus = "Windows tray visible";
     }
 
     private void SaveAutoHideBuild(ThemeState state, int build)
     {
         if (state.AutoHideBuild == build)
             return;
+        var previous = state.AutoHideBuild;
         state.AutoHideBuild = build;
-        journal.Save(state);
+        try { journal.Save(state); }
+        catch
+        {
+            state.AutoHideBuild = previous;
+            throw;
+        }
     }
 
     private void RestoreAutoHide(ThemeState state)
     {
         if (state.OriginalAutoHide is not { } original)
             return;
-        if (platform.ReadAutoHide() != original && !platform.SetAutoHide(original))
+        var current = platform.ReadAutoHide();
+        if (current is null || current != original && !platform.SetAutoHide(original))
             throw new InvalidOperationException("Windows did not restore taskbar auto-hide. Try again after Explorer is ready.");
-        state.OriginalAutoHide = null;
+        SaveAutoHideBaseline(state, null);
+    }
+
+    private void SaveAutoHideBaseline(ThemeState state, bool? original)
+    {
+        var previous = state.OriginalAutoHide;
+        state.OriginalAutoHide = original;
         try { journal.Save(state); }
         catch
         {
-            state.OriginalAutoHide = original;
+            state.OriginalAutoHide = previous;
             throw;
         }
     }

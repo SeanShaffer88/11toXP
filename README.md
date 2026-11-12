@@ -31,6 +31,7 @@ Choose **Luna Blue**, **Luna Silver**, or **Luna Olive Green**. The taskbar and 
 
 The published `v0.2.0-beta.1` predates these controls. Build from source to use them.
 
+- **Keep Windows tray visible** is checked by default, including for older preferences. While the XP taskbar is active, the Windows taskbar stays visible beneath it. Windows continues to handle its tray icons and overflow. For the XP-only layout, uncheck the option and select **Repair**. **Restore** returns the Windows taskbar to its original auto-hide setting.
 - **Start with Windows** defaults to on, including when an older recovery journal has no startup preference. Uncheck it and choose **Apply** or **Repair** to use the theme for the current Windows session. 11toXP removes its sign-in entry and attempts to restore your original settings at sign-out. If restoration was interrupted, reopening 11toXP retries it. Use **Restore and Exit** for immediate cleanup.
 - **Add Shortcut** adds a local Windows shortcut (`.lnk`) to Quick Launch. Move or remove it with the same controls used for built-in entries. 11toXP keeps the original shortcut file in place and asks Windows to open it when you click its Quick Launch button.
 - **Export Diagnostics** creates a new JSON file at a location you choose. It refuses existing destinations and files in the 11toXP settings folder. It records the Windows build, the control window’s display scale, the component flags configured in the active recovery journal, and the category and type of the most recent recovery error in the session, if any. The report excludes private paths, filenames, and usernames. 11toXP collects no telemetry.
@@ -41,7 +42,7 @@ The published `v0.2.0-beta.1` predates these controls. Build from source to use 
 
 The current source build retains saved non-wallpaper preferences in `%LOCALAPPDATA%\11toXP\preferences.json` after **Restore**.
 
-After an OS build change, 11toXP uses its taskbar alongside the native one until Repair verifies auto-hide on the new build. The app uses Windows taskbar APIs and per-user settings. It makes no network requests. The bundled runtime can extract native libraries to the .NET temporary bundle cache at launch.
+If you use the XP-only layout, an OS build change may leave both taskbars visible until **Repair** verifies auto-hide on the new build. The app uses Windows taskbar APIs and per-user settings. It makes no network requests. The bundled runtime can extract native libraries to the .NET temporary bundle cache at launch.
 
 ## Build And Verify
 

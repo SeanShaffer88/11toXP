@@ -164,7 +164,8 @@ public partial class ControlWindow : Window
         };
         return new ThemePreferences(SelectedVariant, UseXpTaskbar.IsChecked == true, appearance, taskbar)
         {
-            StartWithWindows = StartWithWindows.IsChecked == true
+            StartWithWindows = StartWithWindows.IsChecked == true,
+            KeepWindowsTrayVisible = KeepWindowsTrayVisible.IsChecked == true
         };
     }
 
@@ -182,6 +183,7 @@ public partial class ControlWindow : Window
         UseSounds.IsChecked = preferences.Appearance.HasFlag(AppearanceComponents.Sounds);
         UseXpExplorer.IsChecked = preferences.Taskbar.UseXpExplorer;
         StartWithWindows.IsChecked = preferences.StartWithWindows;
+        KeepWindowsTrayVisible.IsChecked = preferences.KeepWindowsTrayVisible;
         GroupingChoice.SelectedIndex = preferences.Taskbar.Grouping == TaskGrouping.Always ? 1 : 0;
         foreach (var shortcut in preferences.Taskbar.EffectiveQuickLaunch)
             launchItems.Add(shortcut);

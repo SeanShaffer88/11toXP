@@ -8,6 +8,7 @@ namespace LunaDesktop.State;
 internal sealed record ThemePreferences(LunaVariant Variant, bool UseTaskbar, AppearanceComponents Appearance, TaskbarOptions Taskbar)
 {
     public bool StartWithWindows { get; init; } = true;
+    public bool KeepWindowsTrayVisible { get; init; } = true;
 
     internal static ThemePreferences Default =>
         new(LunaVariant.Blue, true, AppearanceComponents.All, TaskbarOptions.Default);

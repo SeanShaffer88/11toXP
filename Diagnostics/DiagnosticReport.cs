@@ -99,7 +99,8 @@ internal static class DiagnosticReport
                 cursors = appearance.HasFlag(AppearanceComponents.Cursors),
                 sounds = appearance.HasFlag(AppearanceComponents.Sounds),
                 wallpaper = state?.WallpaperSelection is not null,
-                startWithWindows = preferences?.StartWithWindows == true
+                startWithWindows = preferences?.StartWithWindows == true,
+                keepWindowsTrayVisible = preferences?.KeepWindowsTrayVisible == true
             },
             lastRecoveryError = failure ?? (startupFailed ? new RecoveryFailure("startup", "operationFailed") : null)
         };
