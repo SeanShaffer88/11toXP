@@ -24,7 +24,7 @@ internal interface IThemePlatform
     void ApplyAppearance(AppearanceSnapshot baseline, AppearanceComponents components);
     void RestoreAppearance(AppearanceSnapshot baseline, AppearanceComponents components);
     TaskbarAvailability InspectTaskbar(TaskbarOptions options);
-    void StartShell(LunaVariant variant, TaskbarOptions options, bool allowTrayReveal);
+    void StartShell(LunaVariant variant, TaskbarOptions options, bool allowTrayReveal, bool showTrayThumbnail = false);
     void StopShell();
 }
 
@@ -38,6 +38,7 @@ internal sealed class ThemePlatform(
     private LunaVariant shellVariant;
     private TaskbarOptions? shellOptions;
     private bool shellAllowsTrayReveal;
+    private bool shellShowsTrayThumbnail;
 
     public int Build => Environment.OSVersion.Version.Build;
     public string StartupCommand() => WindowsSession.StartupCommand();
@@ -67,13 +68,15 @@ internal sealed class ThemePlatform(
         return new(targets.Length > 0, connected.Length == 1 && targets.Length == 1);
     }
 
-    public void StartShell(LunaVariant variant, TaskbarOptions options, bool allowTrayReveal)
+    public void StartShell(LunaVariant variant, TaskbarOptions options, bool allowTrayReveal, bool showTrayThumbnail = false)
     {
         var connected = ShellDisplay.Enumerate();
         var targets = ShellDisplay.Resolve(options, connected).OrderByDescending(display => display.IsPrimary)
             .ThenBy(display => display.Id, StringComparer.OrdinalIgnoreCase).ToArray();
         allowTrayReveal &= connected.Length == 1 && targets.Length == 1;
+        showTrayThumbnail &= connected.Length == 1 && targets.Length == 1;
         if (shellVariant == variant && shellAllowsTrayReveal == allowTrayReveal &&
+            shellShowsTrayThumbnail == showTrayThumbnail &&
             shellOptions is { } previous && previous.HasSameLayout(options) &&
             targets.Select(display => display.Id).SequenceEqual(shells.Keys, StringComparer.OrdinalIgnoreCase))
         {
@@ -87,7 +90,7 @@ internal sealed class ThemePlatform(
             foreach (var display in targets)
             {
                 var candidate = new LunaShell(openControl, showWindowsTaskbar, variant, options, openXpExplorer,
-                    allowTrayReveal ? toggleTrayReveal : null, isTrayRevealed, display.Id, requestResize);
+                    allowTrayReveal ? toggleTrayReveal : null, isTrayRevealed, display.Id, requestResize, showTrayThumbnail);
                 shells.Add(display.Id, candidate);
                 candidate.ExplorerRestarted += explorerRestarted;
                 candidate.ShellFaulted += shellFaulted;
@@ -96,6 +99,7 @@ internal sealed class ThemePlatform(
             shellVariant = variant;
             shellOptions = options;
             shellAllowsTrayReveal = allowTrayReveal;
+            shellShowsTrayThumbnail = showTrayThumbnail;
         }
         catch
         {
@@ -223,7 +227,9 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
     private void ShowPreviewShell(ThemePreferences candidate)
     {
         if (candidate.UseTaskbar)
-            platform.StartShell(candidate.Variant, candidate.Taskbar, allowTrayReveal: false);
+            platform.StartShell(candidate.Variant, candidate.Taskbar, allowTrayReveal: false,
+                showTrayThumbnail: candidate.KeepWindowsTrayVisible &&
+                    platform.InspectTaskbar(candidate.Taskbar).CanUseXpOnly);
         else
             platform.StopShell();
     }
