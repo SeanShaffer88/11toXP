@@ -1,14 +1,16 @@
-# Luna Desktop
+# 11toXP
 
-Luna Desktop is a per-user Windows 11 utility that recreates the Windows XP Luna Blue desktop shell. The Windows x64 deliverable is one self-contained executable with no separately installed runtime or theme tools.
+11toXP is a per-user Windows 11 utility that recreates the Windows XP Luna Blue desktop shell. The Windows x64 deliverable is one self-contained executable with no separately installed runtime or theme tools.
 
 | Area | Contract |
 | --- | --- |
-| Shell | The app supplies a blue taskbar, green Start button, two-column Start menu, task switching and clock. The stock taskbar remains available. Native appbar APIs reserve desktop space. |
+| Shell | The app supplies a blue taskbar, green Start button, two-column Start menu, task switching and clock. The Start menu provides access to the stock Windows 11 taskbar. Native appbar APIs reserve desktop space. |
+| Appearance | Original XP-inspired icons, cursors, and sound cues apply to supported per-user settings and preserve prior preferences for restoration. |
 | Apply | Save and flush the original values before setting any persistent Windows preferences. Use a named per-user startup entry for the same executable so the theme can resume after sign-in. |
 | Repair | Recreate the shell and reapply the selected appearance using the original baseline. Explorer and display notifications refresh the shell. |
 | Restore | Close the shell, restore owned settings and remove startup registration. Preserve recovery data until the restore succeeds. |
 | Wallpaper | Default to off. Apply, Repair, Restore, and startup must never read or write wallpaper for a session that never opted in. When selected, use the chosen image only if the original wallpaper configuration can be restored. |
+| Status | Display shell, appearance, wallpaper, startup and recovery state. Surface incompatible or failed components in the control window. |
 | Compatibility | Use documented Windows APIs for integration. Keep native shell access available when a component fails. Use original artwork and sound assets. |
 
 ## Verification
