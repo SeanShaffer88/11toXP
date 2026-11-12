@@ -12,7 +12,7 @@
 
 Extract the portable ZIP to a folder you plan to keep, then open `11toXP.exe`. The executable is unsigned and includes its runtime. The ZIP also includes `Notices.txt`.
 
-- **Apply** enables the selected appearance components and starts 11toXP at subsequent sign-ins.
+- **Apply** enables the selected appearance components and, by default, starts 11toXP at subsequent sign-ins.
 - **Repair** applies changed preferences, refreshes the selected components, and updates the sign-in path if you moved the executable. Turning off a component restores the settings 11toXP still owns for that component.
 - **Restore** removes the XP-style taskbar and sign-in entry and restores the settings 11toXP saved. Restore before deleting the executable.
 - **Restore and Exit** closes 11toXP after successful restoration. A failed restore leaves the controls open for another attempt.
@@ -27,9 +27,19 @@ Choose **Luna Blue**, **Luna Silver**, or **Luna Olive Green**. The taskbar and 
 
 11toXP styles the built-in desktop icons for This PC, Documents, Network, and Recycle Bin if already visible. It uses original assets for those icons and four pointer roles, plus five original sounds for six supported events. High contrast, custom pointer sizes, and muted sound events can limit these changes. Windows Settings, native Explorer, individual app frames, system flyouts, and protected Windows screens retain their native appearance.
 
+## Current Source Build
+
+The published `v0.2.0-beta.1` predates these controls. Build from source to use them.
+
+- **Start with Windows** defaults to on, including when an older recovery journal has no startup preference. Uncheck it and choose **Apply** or **Repair** to use the theme for the current Windows session. 11toXP removes its sign-in entry and attempts to restore your original settings at sign-out. If restoration was interrupted, reopening 11toXP retries it. Use **Restore and Exit** for immediate cleanup.
+- **Add Shortcut** adds a local Windows shortcut (`.lnk`) to Quick Launch. Move or remove it with the same controls used for built-in entries. 11toXP keeps the original shortcut file in place and asks Windows to open it when you click its Quick Launch button.
+- **Export Diagnostics** creates a new JSON file at a location you choose. It refuses existing destinations and files in the 11toXP settings folder. It records the Windows build, the control window’s display scale, the component flags configured in the active recovery journal, and the category and type of the most recent recovery error in the session, if any. The report excludes private paths, filenames, and usernames. 11toXP collects no telemetry.
+
 ## State And Recovery
 
 11toXP records original settings and active preferences in `%LOCALAPPDATA%\11toXP\theme-state.json` before applying changes. It also stores control and browser window placement and local copies of generated appearance assets. Sign-in uses the app-owned `11toXP.0348C6BA` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Reopen 11toXP and select **Restore** after an interrupted operation. If no instance is running, `11toXP.exe --restore` can perform the same recovery. A running instance returns exit code 3 for this command and can restore through its window.
+
+The current source build retains saved non-wallpaper preferences in `%LOCALAPPDATA%\11toXP\preferences.json` after **Restore**.
 
 After an OS build change, 11toXP uses its taskbar alongside the native one until Repair verifies auto-hide on the new build. The app uses Windows taskbar APIs and per-user settings. It makes no network requests. The bundled runtime can extract native libraries to the .NET temporary bundle cache at launch.
 

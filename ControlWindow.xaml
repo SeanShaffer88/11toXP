@@ -87,9 +87,9 @@
         </StackPanel>
       </Grid>
       <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-        <StackPanel Margin="22,17,22,18" KeyboardNavigation.TabNavigation="Continue">
+        <StackPanel Margin="22,13,22,6" KeyboardNavigation.TabNavigation="Continue">
           <TextBlock Text="Windows XP Appearance" FontSize="23" FontWeight="Bold"/>
-          <UniformGrid Columns="3" Margin="0,12,0,12">
+          <UniformGrid Columns="3" Margin="0,8,0,8">
             <RadioButton x:Name="BlueVariant" Content="Luna Blue" GroupName="LunaVariant"
                          MinHeight="28" AutomationProperties.AutomationId="LunaBlue" Checked="VariantChanged"/>
             <RadioButton x:Name="SilverVariant" Content="Luna Silver" GroupName="LunaVariant"
@@ -97,30 +97,42 @@
             <RadioButton x:Name="OliveVariant" Content="Luna Olive Green" GroupName="LunaVariant"
                          MinHeight="28" AutomationProperties.AutomationId="LunaOliveGreen" Checked="VariantChanged"/>
           </UniformGrid>
-          <UniformGrid x:Name="Components" Columns="2" Margin="0,0,0,8">
+          <Grid x:Name="Components" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="1.2*"/>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
             <CheckBox x:Name="UseXpTaskbar" Content="Taskbar and Start Menu" MinHeight="26"
                       AutomationProperties.AutomationId="UseXpTaskbar"/>
-            <CheckBox x:Name="UseDesktopIcons" Content="Desktop Icons" MinHeight="26"
+            <CheckBox Grid.Column="1" x:Name="UseDesktopIcons" Content="Desktop Icons" MinHeight="26"
                       AutomationProperties.AutomationId="UseDesktopIcons"/>
-            <CheckBox x:Name="UseCursors" Content="Cursors" MinHeight="26"
+            <CheckBox Grid.Column="2" x:Name="UseCursors" Content="Cursors" MinHeight="26"
                       AutomationProperties.AutomationId="UseCursors"/>
-            <CheckBox x:Name="UseSounds" Content="Sounds" MinHeight="26"
+            <CheckBox Grid.Row="1" x:Name="UseSounds" Content="Sounds" MinHeight="26"
                       AutomationProperties.AutomationId="UseSounds"/>
-            <CheckBox x:Name="WallpaperOptIn" Content="Change Wallpaper" MinHeight="26"
+            <CheckBox Grid.Row="1" Grid.Column="1" x:Name="WallpaperOptIn" Content="Change Wallpaper" MinHeight="26"
                       AutomationProperties.AutomationId="ChangeWallpaper"
                       Checked="WallpaperChoiceChanged" Unchecked="WallpaperChoiceChanged"/>
-            <CheckBox x:Name="UseXpExplorer" Content="Use XP Explorer" MinHeight="26"
+            <CheckBox Grid.Row="1" Grid.Column="2" x:Name="UseXpExplorer" Content="Use XP Explorer" MinHeight="26"
                       ToolTip="Open folders from the XP taskbar and Start menu in XP Explorer."
                       AutomationProperties.AutomationId="UseXpExplorer"/>
-          </UniformGrid>
-          <DockPanel Margin="0,2,0,12" LastChildFill="True">
+            <CheckBox Grid.Row="2" x:Name="StartWithWindows" Content="Start with Windows" MinHeight="26"
+                      AutomationProperties.AutomationId="StartWithWindows"/>
+          </Grid>
+          <DockPanel Margin="0,2,0,8" LastChildFill="True">
             <Button x:Name="WallpaperPicker" DockPanel.Dock="Right" Content="Choose Image…"
                     IsEnabled="False" AutomationProperties.AutomationId="ChooseWallpaper" Click="BrowseClick"/>
             <TextBlock x:Name="WallpaperFile" Text="Keep my current wallpaper."
                        VerticalAlignment="Center" Margin="0,0,8,0" TextTrimming="CharacterEllipsis"/>
           </DockPanel>
-          <Border Height="1" Background="{DynamicResource Rule}" Margin="0,0,0,13"/>
-          <StackPanel x:Name="TaskbarSettings" Margin="0,0,0,12">
+          <Border Height="1" Background="{DynamicResource Rule}" Margin="0,0,0,10"/>
+          <StackPanel x:Name="TaskbarSettings" Margin="0,0,0,9">
             <TextBlock Text="Taskbar" FontSize="16" FontWeight="Bold"/>
             <DockPanel Margin="0,6,0,8">
               <Label Content="Group Similar Windows" Target="{Binding ElementName=GroupingChoice}"
@@ -137,9 +149,16 @@
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="228"/>
               </Grid.ColumnDefinitions>
-              <ListBox x:Name="LaunchList" MinHeight="82" Margin="0,0,10,0"
+              <ListBox x:Name="LaunchList" MinHeight="82" MaxHeight="98" Margin="0,0,10,0"
+                       ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                        DisplayMemberPath="Label" SelectionChanged="QuickLaunchSelectionChanged"
-                       AutomationProperties.Name="Quick Launch Items" AutomationProperties.AutomationId="QuickLaunchItems"/>
+                       AutomationProperties.Name="Quick Launch Items" AutomationProperties.AutomationId="QuickLaunchItems">
+                <ListBox.ItemContainerStyle>
+                  <Style TargetType="ListBoxItem">
+                    <Setter Property="ToolTip" Value="{Binding ShortcutPath}"/>
+                  </Style>
+                </ListBox.ItemContainerStyle>
+              </ListBox>
               <StackPanel Grid.Column="1">
                 <DockPanel Margin="0,0,0,4">
                   <Button x:Name="AddShortcut" DockPanel.Dock="Right" Content="Add" Margin="5,0,0,0"
@@ -148,6 +167,8 @@
                             AutomationProperties.Name="Available Quick Launch Items"
                             AutomationProperties.AutomationId="QuickLaunchAvailable"/>
                 </DockPanel>
+                <Button x:Name="AddShortcutFile" Content="Add Shortcut…" Margin="0,0,0,4"
+                        AutomationProperties.AutomationId="QuickLaunchAddShortcut" Click="QuickLaunchAddFileClick"/>
                 <UniformGrid Columns="3">
                   <Button x:Name="RemoveShortcut" Content="Remove" Padding="4,3" Margin="0,0,4,0"
                           AutomationProperties.AutomationId="QuickLaunchRemove" Click="QuickLaunchRemoveClick"/>
@@ -159,13 +180,15 @@
               </StackPanel>
             </Grid>
           </StackPanel>
-          <WrapPanel Margin="0,0,0,12">
+          <WrapPanel Margin="0,0,0,8">
             <Button Content="Open XP Explorer" Margin="0,0,8,0"
                     AutomationProperties.AutomationId="OpenXpExplorer" Click="OpenXpExplorerClick"/>
-            <Button x:Name="FocusTaskbarAction" Content="_Focus XP Taskbar"
+            <Button x:Name="FocusTaskbarAction" Content="_Focus XP Taskbar" Margin="0,0,8,0"
                     AutomationProperties.AutomationId="FocusXpTaskbar" Click="FocusTaskbarClick"/>
+            <Button Content="Export Diagnostics…"
+                    AutomationProperties.AutomationId="ExportDiagnostics" Click="ExportDiagnosticsClick"/>
           </WrapPanel>
-          <Border Padding="10,8" Background="{DynamicResource StatusPanel}" BorderBrush="{DynamicResource Rule}" BorderThickness="1">
+          <Border Padding="10,7" Background="{DynamicResource StatusPanel}" BorderBrush="{DynamicResource Rule}" BorderThickness="1">
             <Grid>
               <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="98"/>
@@ -190,26 +213,31 @@
               <TextBlock Grid.Row="4" Grid.Column="1" x:Name="CompatibilityValue" TextWrapping="Wrap"/>
             </Grid>
           </Border>
-          <TextBlock x:Name="StatusMessage" Margin="0,11,0,0" TextWrapping="Wrap"
-                     AutomationProperties.AutomationId="ThemeStatus" AutomationProperties.LiveSetting="Polite"/>
         </StackPanel>
       </ScrollViewer>
-      <Grid Grid.Row="2" Margin="22,0,22,15">
-        <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="*"/>
-          <ColumnDefinition Width="*"/>
-          <ColumnDefinition Width="*"/>
-          <ColumnDefinition Width="1.6*"/>
-        </Grid.ColumnDefinitions>
-        <Button x:Name="ApplyAction" Content="_Apply" Margin="0,0,5,0"
-                AutomationProperties.AutomationId="ApplyButton" Click="ApplyClick"/>
-        <Button Grid.Column="1" x:Name="RepairAction" Content="_Repair" Margin="0,0,5,0"
-                AutomationProperties.AutomationId="RepairButton" Click="RepairClick"/>
-        <Button Grid.Column="2" x:Name="RestoreAction" Content="Res_tore" Margin="0,0,5,0"
-                AutomationProperties.AutomationId="RestoreButton" Click="RestoreClick"/>
-        <Button Grid.Column="3" x:Name="RestoreAndExitAction" Content="Restore and E_xit"
-                AutomationProperties.AutomationId="RestoreAndExitButton" Click="RestoreAndExitClick"/>
-      </Grid>
+      <StackPanel Grid.Row="2" Margin="22,3,22,15">
+        <ScrollViewer MaxHeight="84" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                      Margin="0,0,0,9">
+          <TextBlock x:Name="StatusMessage" TextWrapping="Wrap"
+                     AutomationProperties.AutomationId="ThemeStatus" AutomationProperties.LiveSetting="Polite"/>
+        </ScrollViewer>
+        <Grid>
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="1.6*"/>
+          </Grid.ColumnDefinitions>
+          <Button x:Name="ApplyAction" Content="_Apply" Margin="0,0,5,0"
+                  AutomationProperties.AutomationId="ApplyButton" Click="ApplyClick"/>
+          <Button Grid.Column="1" x:Name="RepairAction" Content="_Repair" Margin="0,0,5,0"
+                  AutomationProperties.AutomationId="RepairButton" Click="RepairClick"/>
+          <Button Grid.Column="2" x:Name="RestoreAction" Content="Res_tore" Margin="0,0,5,0"
+                  AutomationProperties.AutomationId="RestoreButton" Click="RestoreClick"/>
+          <Button Grid.Column="3" x:Name="RestoreAndExitAction" Content="Restore and E_xit"
+                  AutomationProperties.AutomationId="RestoreAndExitButton" Click="RestoreAndExitClick"/>
+        </Grid>
+      </StackPanel>
     </Grid>
   </Border>
 </Window>

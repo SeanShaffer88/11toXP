@@ -1,5 +1,6 @@
 using System.IO;
 using LunaDesktop.Appearance;
+using LunaDesktop.Diagnostics;
 using LunaDesktop.Shell;
 
 namespace LunaDesktop.State;
@@ -58,7 +59,7 @@ internal sealed class ThemePlatform(
     {
         if (shell is not null && shellVariant == variant && shellOptions is { } previous &&
             previous.Grouping == options.Grouping && previous.UseXpExplorer == options.UseXpExplorer &&
-            previous.QuickLaunch.SequenceEqual(options.QuickLaunch))
+            previous.HasSameQuickLaunch(options))
         {
             shell.Repair();
             return;
@@ -93,7 +94,7 @@ internal sealed class ThemePlatform(
     }
 }
 
-internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform platform)
+internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform platform, ThemePreferenceStore? preferencesStore = null)
 {
     public ThemeState? State { get; private set; }
     public bool ShellPaused { get; private set; }
@@ -102,6 +103,7 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
     public string WallpaperStatus { get; private set; } = "Unmanaged";
     public string StartupStatus { get; private set; } = "Off";
     public string CompatibilityStatus { get; private set; } = "Ready";
+    public RecoveryFailure? LastRecoveryFailure { get; private set; }
 
     public void Load()
     {
@@ -127,7 +129,12 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
             platform.ValidateAppearance(appearance);
             AppearanceStatus = "Saved for restore";
         }
-        StartupStatus = state.StartupCommand is not null && platform.HasStartup(state.StartupCommand) ? "On" : "Off";
+        var registered = (state.StartupCommand is { } current && platform.HasStartup(current)) ||
+            (state.PreviousStartupCommand is { } old && platform.HasStartup(old));
+        if (!registered)
+            StartupStatus = "Off";
+        else
+            StartupStatus = state.Preferences.StartWithWindows ? "On" : "Removal pending";
         if (state.Phase != ThemePhase.Active)
             CompatibilityStatus = "Restore pending";
     }
@@ -140,7 +147,7 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
         var next = new ThemeState
         {
             Phase = ThemePhase.Applying,
-            StartupCommand = platform.StartupCommand(),
+            StartupCommand = options.StartWithWindows ? platform.StartupCommand() : null,
             Wallpaper = image is null ? null : platform.CaptureWallpaper(image),
             Preferences = options,
             AppearanceManaged = options.Appearance,
@@ -166,6 +173,7 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
             }
             throw new InvalidOperationException($"Apply failed. Previous settings were restored. {applyError.Message}", applyError);
         }
+        SavePreferences(options);
     }
 
     public void Repair(string? image, ThemePreferences? preferences = null)
@@ -175,6 +183,8 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
         var previous = state.Preferences;
         var previousWallpaper = state.Wallpaper;
         var previousPending = state.WallpaperRestorePending;
+        var previousStartupCommand = state.StartupCommand;
+        var startupCommand = options.StartWithWindows ? previousStartupCommand ?? platform.StartupCommand() : previousStartupCommand;
         if (image is not null)
         {
             var wallpaper = state.Wallpaper is { } existing
@@ -189,20 +199,25 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
             state.WallpaperRestorePending = true;
         }
         state.Preferences = options;
+        state.StartupCommand = startupCommand;
         try { journal.Save(state); }
         catch
         {
             state.Preferences = previous;
             state.Wallpaper = previousWallpaper;
             state.WallpaperRestorePending = previousPending;
+            state.StartupCommand = previousStartupCommand;
             throw;
         }
         RepairCore(state, verifyBuild: true);
+        SavePreferences(options);
     }
 
     public void Resume()
     {
-        if (State is { Phase: ThemePhase.Active } state)
+        if (State is { Preferences.StartWithWindows: false })
+            Restore();
+        else if (State is { Phase: ThemePhase.Active } state)
             RepairCore(state, verifyBuild: false);
     }
 
@@ -223,15 +238,24 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
         CompatibilityStatus = "Repair resumes the XP taskbar";
     }
 
-    public void RecoverShellFault()
+    public void RecoverShellFault(Exception fault)
     {
         if (State is not { } state)
             return;
+        LastRecoveryFailure = RecoveryFailure.From("XP taskbar", fault);
         ShellPaused = true;
         ShellStatus = "Paused after a taskbar error";
         CompatibilityStatus = "Repair needed";
-        try { platform.StopShell(); }
-        finally { RestoreAutoHide(state); }
+        try
+        {
+            try { platform.StopShell(); }
+            finally { RestoreAutoHide(state); }
+        }
+        catch (Exception error)
+        {
+            LastRecoveryFailure = RecoveryFailure.From("Windows taskbar", error);
+            throw;
+        }
     }
 
     public void Restore()
@@ -239,25 +263,13 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
         if (State is not { } state)
             return;
         state.Phase = ThemePhase.Restoring;
-        journal.Save(state);
+        SaveRestoreJournal(() => journal.Save(state));
         CompatibilityStatus = "Restore pending";
         var errors = new List<string>();
         AttemptRestore("XP taskbar", () => platform.StopShell(), () => ShellStatus = "Windows taskbar", errors);
         AttemptRestore("Windows taskbar", () => RestoreAutoHide(state), () => { }, errors);
-        if (state.StartupCommand is { } command)
-        {
-            AttemptRestore("Sign-in startup", () =>
-            {
-                platform.RemoveStartup(command);
-                if (state.PreviousStartupCommand is { } previous)
-                    platform.RemoveStartup(previous);
-            }, () =>
-            {
-                state.StartupCommand = null;
-                state.PreviousStartupCommand = null;
-                StartupStatus = "Off";
-            }, errors);
-        }
+        if (state.StartupCommand is not null || state.PreviousStartupCommand is not null)
+            RunComponent("Sign-in startup", () => ClearStartup(state), () => StartupStatus = "Needs repair", errors);
         if (state.Appearance is { } appearance)
         {
             RunComponent("Appearance", () =>
@@ -276,7 +288,7 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
         }
         if (errors.Count != 0)
             throw new InvalidOperationException(string.Join(Environment.NewLine, errors));
-        journal.Clear();
+        SaveRestoreJournal(journal.Clear);
         State = null;
         ShellPaused = false;
         CompatibilityStatus = "Ready";
@@ -287,6 +299,25 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
     private ThemeState ActiveState() =>
         State is { Phase: ThemePhase.Active } state ? state :
         throw new InvalidOperationException("Use Restore to finish the interrupted operation.");
+
+    private void SaveRestoreJournal(Action save)
+    {
+        try { save(); }
+        catch (Exception error)
+        {
+            LastRecoveryFailure = RecoveryFailure.From("Restore journal", error);
+            throw;
+        }
+    }
+
+    private void SavePreferences(ThemePreferences options)
+    {
+        try { preferencesStore?.Save(options); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            throw new InvalidOperationException($"The theme was updated, but 11toXP could not save the options for next time. {error.Message}", error);
+        }
+    }
 
     private void RepairCore(ThemeState state, bool verifyBuild)
     {
@@ -311,10 +342,13 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
         {
             WallpaperStatus = "Unmanaged";
         }
-        if (state.StartupCommand is not null)
+        RunComponent("Sign-in startup", () =>
         {
-            RunComponent("Sign-in startup", () => RefreshStartup(state, verifyBuild), () => StartupStatus = "Needs repair", errors);
-        }
+            if (!state.Preferences.StartWithWindows)
+                ClearStartup(state);
+            else if (verifyBuild || state.StartupCommand is not null)
+                RefreshStartup(state, verifyBuild);
+        }, () => StartupStatus = "Needs repair", errors);
         if (errors.Count != 0)
         {
             CompatibilityStatus = "Repair needed";
@@ -386,22 +420,41 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
                 StartupStatus = "App moved. Repair updates sign-in.";
                 return;
             }
-            if (state.PreviousStartupCommand is not null && platform.HasStartup(state.PreviousStartupCommand))
-            {
-                state.StartupCommand = state.PreviousStartupCommand;
-                state.PreviousStartupCommand = null;
-            }
-            state.PreviousStartupCommand = state.StartupCommand;
-            state.StartupCommand = current;
-            journal.Save(state);
+            var previous = state.PreviousStartupCommand is { } pending && platform.HasStartup(pending)
+                ? pending
+                : state.StartupCommand;
+            SaveStartup(state, current, previous);
         }
         platform.EnsureStartup(current, state.PreviousStartupCommand);
         if (state.PreviousStartupCommand is not null)
-        {
-            state.PreviousStartupCommand = null;
-            journal.Save(state);
-        }
+            SaveStartup(state, current, null);
         StartupStatus = "On";
+    }
+
+    private void ClearStartup(ThemeState state)
+    {
+        if (state.StartupCommand is { } command)
+            platform.RemoveStartup(command);
+        if (state.PreviousStartupCommand is { } previous)
+            platform.RemoveStartup(previous);
+        if (state.StartupCommand is not null || state.PreviousStartupCommand is not null)
+            SaveStartup(state, null, null);
+        StartupStatus = "Off";
+    }
+
+    private void SaveStartup(ThemeState state, string? command, string? previous)
+    {
+        var oldCommand = state.StartupCommand;
+        var oldPrevious = state.PreviousStartupCommand;
+        state.StartupCommand = command;
+        state.PreviousStartupCommand = previous;
+        try { journal.Save(state); }
+        catch
+        {
+            state.StartupCommand = oldCommand;
+            state.PreviousStartupCommand = oldPrevious;
+            throw;
+        }
     }
 
     private void RefreshShell(ThemeState state, bool verifyBuild)
@@ -496,11 +549,12 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
             journal.Save(State!);
         }, () => { }, errors);
 
-    private static void RunComponent(string name, Action action, Action failed, List<string> errors)
+    private void RunComponent(string name, Action action, Action failed, List<string> errors)
     {
         try { action(); }
         catch (Exception error)
         {
+            LastRecoveryFailure = RecoveryFailure.From(name, error);
             failed();
             errors.Add($"{name}: {error.Message}");
         }
