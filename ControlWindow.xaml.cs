@@ -1,8 +1,13 @@
 using System.ComponentModel;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Automation.Peers;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Threading;
 using Microsoft.Win32;
 using LunaDesktop.Diagnostics;
 using LunaDesktop.State;
@@ -17,7 +22,12 @@ public partial class ControlWindow : Window
     private readonly bool preview;
     private string? image;
     private bool previewApplied;
+    private ThemePreferences? previewPreferences;
     private string? message;
+    private TaskbarConfirmationWindow? taskbarConfirmation;
+    private bool loadingDisplays;
+    private bool hasDisplaySelection;
+    private readonly HashSet<string> selectedDisplayIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly ObservableCollection<QuickLaunchEntry> launchItems = [];
     private readonly Dictionary<string, object> normalBrushes = [];
     private static readonly QuickLaunchEntry[] ShortcutChoices =
@@ -42,6 +52,7 @@ public partial class ControlWindow : Window
         LoadPreferences(app.Coordinator?.State?.Preferences ?? (preview ? ThemePreferences.Default : app.SavedPreferences));
         ApplyHighContrast();
         SystemParameters.StaticPropertyChanged += SystemParametersChanged;
+        app.TaskbarDisplaysChanged += RefreshDisplayChoices;
         Activated += (_, _) => RefreshTaskbarFocus();
         if (!preview && app.Coordinator?.State?.WallpaperSelection is { } wallpaper)
         {
@@ -56,6 +67,8 @@ public partial class ControlWindow : Window
     internal void RefreshStatus()
     {
         var coordinator = app.Coordinator;
+        if (!preview && taskbarConfirmation is { IsVisible: true } dialog && coordinator?.IsTaskbarPreviewActive == false)
+            dialog.Close();
         var state = coordinator?.State;
         var active = preview ? previewApplied : state?.Phase == ThemePhase.Active;
         ApplyAction.IsEnabled = preview ? !previewApplied : coordinator is not null && state is null;
@@ -89,13 +102,29 @@ public partial class ControlWindow : Window
         }
     }
 
-    internal bool PerformOperation(Action operation, string success)
+    private void StatusDetailsExpanded(object sender, RoutedEventArgs e)
+    {
+        if (sender is Expander { Content: FrameworkElement details } expander)
+            Dispatcher.InvokeAsync(() =>
+            {
+                if (expander.IsExpanded)
+                    details.BringIntoView();
+            }, DispatcherPriority.Loaded);
+    }
+
+    internal bool PerformOperation(Action operation, string success) =>
+        PerformOperation(() =>
+        {
+            operation();
+            return success;
+        });
+
+    private bool PerformOperation(Func<string> operation)
     {
         app.ClearStartupError();
         try
         {
-            operation();
-            message = success;
+            message = operation();
             RefreshStatus();
             return true;
         }
@@ -107,23 +136,97 @@ public partial class ControlWindow : Window
         }
     }
 
-    private void ApplyClick(object sender, RoutedEventArgs e) => PerformOperation(() =>
-    {
-        var selected = SelectedImage();
-        if (preview)
-            previewApplied = true;
-        else
-            app.Coordinator?.Apply(selected, SelectedPreferences());
-        app.UpdateXpExplorerVariant(SelectedVariant);
-    }, preview ? "Preview applied." : "XP appearance applied.");
+    private void ApplyClick(object sender, RoutedEventArgs e) => ApplyOrRepair(repair: false);
+    private void RepairClick(object sender, RoutedEventArgs e) => ApplyOrRepair(repair: true);
 
-    private void RepairClick(object sender, RoutedEventArgs e) => PerformOperation(() =>
+    private void ApplyOrRepair(bool repair) => PerformOperation(() =>
     {
-        var selected = SelectedImage();
-        if (!preview)
-            app.Coordinator?.Repair(selected, SelectedPreferences());
-        app.UpdateXpExplorerVariant(SelectedVariant);
-    }, preview ? "Preview repaired." : "Repair completed.");
+        const string reverted = "Taskbar preview reverted. No settings were saved.";
+        var selectedImage = SelectedImage();
+        var options = SelectedPreferences();
+        if (preview)
+        {
+            if (PreviewLayoutChanged(options) && !ConfirmTaskbarLayout())
+                return reverted;
+            previewApplied = true;
+            previewPreferences = options;
+            return repair ? "Preview repaired." : "Preview applied.";
+        }
+
+        var coordinator = app.Coordinator ?? throw new InvalidOperationException("The restore record is unavailable.");
+        void ApplySettings()
+        {
+            if (repair)
+                coordinator.Repair(selectedImage, options);
+            else
+                coordinator.Apply(selectedImage, options);
+            app.UpdateXpExplorerVariant(options.Variant);
+        }
+
+        if (coordinator.NeedsTaskbarPreview(options))
+        {
+            if (!ConfirmTaskbarLayout(coordinator, options, ApplySettings))
+                return reverted;
+        }
+        else
+            ApplySettings();
+        return repair ? "Repair completed." : "XP appearance applied.";
+    });
+
+    internal void RequestTaskbarResize(TaskbarButtonSize size)
+    {
+        var coordinator = app.Coordinator;
+        if (preview || app.IsSessionEnding || taskbarConfirmation is not null || coordinator is null ||
+            coordinator.IsTaskbarPreviewActive || coordinator.State is not { Phase: ThemePhase.Active } state ||
+            state.Preferences.Taskbar.IsLocked || state.Preferences.Taskbar.ButtonSize == size)
+            return;
+
+        if (!IsVisible)
+            Show();
+        if (WindowState == WindowState.Minimized)
+            WindowState = WindowState.Normal;
+        Activate();
+        var options = state.Preferences with { Taskbar = state.Preferences.Taskbar with { ButtonSize = size } };
+        PerformOperation(() =>
+        {
+            if (!ConfirmTaskbarLayout(coordinator, options, () => coordinator.KeepTaskbarResize(size), resizeOnly: true))
+                return "Taskbar preview reverted. No settings were saved.";
+            TaskbarButtonSizeChoice.SelectedIndex = size == TaskbarButtonSize.Small ? 1 : 0;
+            return "Taskbar size saved.";
+        });
+    }
+
+    private bool PreviewLayoutChanged(ThemePreferences options) =>
+        previewPreferences is not { } previous ? options.UseTaskbar :
+        (previous.UseTaskbar || options.UseTaskbar) &&
+        (previous.UseTaskbar != options.UseTaskbar || previous.Variant != options.Variant ||
+         previous.KeepWindowsTrayVisible != options.KeepWindowsTrayVisible ||
+         !previous.Taskbar.HasSameLayout(options.Taskbar));
+
+    private bool ConfirmTaskbarLayout(ThemeCoordinator coordinator, ThemePreferences options, Action apply, bool resizeOnly = false)
+    {
+        coordinator.BeginTaskbarPreview(options);
+        try
+        {
+            if (!ConfirmTaskbarLayout(resizeOnly) || app.IsSessionEnding)
+                return false;
+            coordinator.CommitTaskbarPreview(apply);
+            return true;
+        }
+        finally
+        {
+            if (coordinator.IsTaskbarPreviewActive)
+                coordinator.CancelTaskbarPreview();
+        }
+    }
+
+    private bool ConfirmTaskbarLayout(bool resizeOnly = false)
+    {
+        var dialog = new TaskbarConfirmationWindow(this, Stopwatch.GetTimestamp(), resizeOnly);
+        taskbarConfirmation = dialog;
+        try { return dialog.ShowDialog() == true; }
+        finally { taskbarConfirmation = null; }
+    }
 
     private void RestoreClick(object sender, RoutedEventArgs e) =>
         PerformOperation(RestoreTheme, preview ? "Preview restored." : "Previous Windows settings restored.");
@@ -137,7 +240,10 @@ public partial class ControlWindow : Window
     private void RestoreTheme()
     {
         if (preview)
+        {
             previewApplied = false;
+            previewPreferences = null;
+        }
         else
             app.Coordinator?.Restore();
         image = null;
@@ -160,7 +266,11 @@ public partial class ControlWindow : Window
         var builtIns = launchItems.Select(item => item.BuiltIn).OfType<QuickLaunchItem>().ToArray();
         var taskbar = new TaskbarOptions(grouping, builtIns, UseXpExplorer.IsChecked == true)
         {
-            OrderedQuickLaunch = launchItems.Count == builtIns.Length ? null : [.. launchItems]
+            OrderedQuickLaunch = launchItems.Count == builtIns.Length ? null : [.. launchItems],
+            ButtonSize = TaskbarButtonSizeChoice.SelectedIndex == 1 ? TaskbarButtonSize.Small : TaskbarButtonSize.Large,
+            ShowLabels = ShowTaskbarLabels.IsChecked == true,
+            IsLocked = LockTaskbar.IsChecked == true,
+            DisplayIds = SelectedDisplays()
         };
         return new ThemePreferences(SelectedVariant, UseXpTaskbar.IsChecked == true, appearance, taskbar)
         {
@@ -185,10 +295,112 @@ public partial class ControlWindow : Window
         StartWithWindows.IsChecked = preferences.StartWithWindows;
         KeepWindowsTrayVisible.IsChecked = preferences.KeepWindowsTrayVisible;
         GroupingChoice.SelectedIndex = preferences.Taskbar.Grouping == TaskGrouping.Always ? 1 : 0;
+        TaskbarButtonSizeChoice.SelectedIndex = preferences.Taskbar.ButtonSize == TaskbarButtonSize.Small ? 1 : 0;
+        ShowTaskbarLabels.IsChecked = preferences.Taskbar.ShowLabels;
+        LockTaskbar.IsChecked = preferences.Taskbar.IsLocked;
+        LoadDisplayChoices(preferences.Taskbar.DisplayIds);
         foreach (var shortcut in preferences.Taskbar.EffectiveQuickLaunch)
             launchItems.Add(shortcut);
         LaunchList.SelectedIndex = launchItems.Count > 0 ? 0 : -1;
         UpdateQuickLaunchControls();
+    }
+
+    private string[]? SelectedDisplays()
+    {
+        if (UsePrimaryDisplay.IsChecked == true)
+            return null;
+        if (selectedDisplayIds.Count == 0)
+        {
+            TaskbarDisplays.IsExpanded = true;
+            throw new InvalidOperationException("Select a display for the XP taskbar.");
+        }
+        return selectedDisplayIds.OrderBy(id => id, StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+
+    private void LoadDisplayChoices(string[]? ids)
+    {
+        loadingDisplays = true;
+        try
+        {
+            selectedDisplayIds.Clear();
+            if (ids is not null)
+                selectedDisplayIds.UnionWith(ids);
+            hasDisplaySelection = ids is not null;
+            UsePrimaryDisplay.IsChecked = ids is null;
+        }
+        finally { loadingDisplays = false; }
+        RefreshDisplayChoices();
+    }
+
+    private void DisplayModeChanged(object sender, RoutedEventArgs e)
+    {
+        if (!loadingDisplays)
+            RefreshDisplayChoices();
+    }
+
+    private void RefreshDisplayChoices()
+    {
+        if (TaskbarDisplayChoices is null)
+            return;
+        string? focusedId = Keyboard.FocusedElement is CheckBox focused && TaskbarDisplayChoices.Children.Contains(focused)
+            ? focused.Tag as string : null;
+        TaskbarDisplayChoices.Children.Clear();
+        bool manual = UsePrimaryDisplay.IsChecked != true;
+        TaskbarDisplayChoices.Visibility = manual ? Visibility.Visible : Visibility.Collapsed;
+        if (!manual)
+            return;
+
+        ShellDisplay[] displays;
+        bool enumerationFailed = false;
+        try { displays = app.GetTaskbarDisplays(); }
+        catch (InvalidOperationException)
+        {
+            displays = [];
+            enumerationFailed = true;
+            TaskbarDisplayChoices.Children.Add(new TextBlock
+            {
+                Text = "Windows could not list the connected displays.",
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(15, 3, 0, 3)
+            });
+        }
+        if (!hasDisplaySelection && displays.FirstOrDefault(display => display.IsPrimary) is { } primary)
+        {
+            selectedDisplayIds.Add(primary.Id);
+            hasDisplaySelection = true;
+        }
+
+        var connected = displays.Select(display => display.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        for (int index = 0; index < displays.Length; index++)
+            AddDisplayChoice(displays[index].Id, displays[index].Label, $"TaskbarDisplay{index + 1}");
+        var disconnected = selectedDisplayIds.Where(id => !connected.Contains(id)).ToArray();
+        for (int index = 0; index < disconnected.Length; index++)
+            AddDisplayChoice(disconnected[index], $"Saved display {index + 1} (disconnected)", $"TaskbarDisconnectedDisplay{index + 1}");
+        if (!enumerationFailed && displays.Length == 0 && disconnected.Length == 0)
+            TaskbarDisplayChoices.Children.Add(new TextBlock { Text = "No displays available.", Margin = new Thickness(15, 3, 0, 3) });
+        if (focusedId is not null)
+        {
+            var previous = TaskbarDisplayChoices.Children.OfType<CheckBox>().FirstOrDefault(choice =>
+                string.Equals(choice.Tag as string, focusedId, StringComparison.OrdinalIgnoreCase));
+            (previous ?? UsePrimaryDisplay).Focus();
+        }
+    }
+
+    private void AddDisplayChoice(string id, string label, string automationId)
+    {
+        var choice = new CheckBox
+        {
+            Content = new TextBlock { Text = label, TextWrapping = TextWrapping.Wrap },
+            Tag = id,
+            IsChecked = selectedDisplayIds.Contains(id),
+            MinHeight = 26,
+            Margin = new Thickness(15, 0, 0, 0)
+        };
+        AutomationProperties.SetName(choice, label);
+        AutomationProperties.SetAutomationId(choice, automationId);
+        choice.Checked += (_, _) => selectedDisplayIds.Add(id);
+        choice.Unchecked += (_, _) => selectedDisplayIds.Remove(id);
+        TaskbarDisplayChoices.Children.Add(choice);
     }
 
     private void VariantChanged(object sender, RoutedEventArgs e)
@@ -372,6 +584,7 @@ public partial class ControlWindow : Window
     private void OnClosed(object? sender, EventArgs e)
     {
         SystemParameters.StaticPropertyChanged -= SystemParametersChanged;
+        app.TaskbarDisplaysChanged -= RefreshDisplayChoices;
         app.CloseControl(preview);
     }
 

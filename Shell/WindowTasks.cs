@@ -54,6 +54,7 @@ internal sealed class WindowTasks : IDisposable
     }
 
     internal event Action<IReadOnlyList<TaskWindow>, nint>? Changed;
+    internal nint FullScreenWindow { get; set; }
 
     internal void Start()
     {
@@ -91,12 +92,12 @@ internal sealed class WindowTasks : IDisposable
 
         if (eventId == ForegroundEvent)
             ObserveForeground(window);
-        else if (eventId == DestroyEvent)
+        else if (window != FullScreenWindow && eventId == DestroyEvent)
         {
             if (!tracked.Contains(window))
                 return;
         }
-        else if (!tracked.Contains(window) && ShellNative.GetAncestor(window, Root) != window)
+        else if (window != FullScreenWindow && !tracked.Contains(window) && ShellNative.GetAncestor(window, Root) != window)
             return;
 
         if (!refreshTimer.IsEnabled)
@@ -181,7 +182,8 @@ internal sealed class WindowTasks : IDisposable
         if (className.ToString() is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd")
             return false;
 
-        return ShellNative.GetWindowThreadProcessId(window, out process) != 0;
+        return ShellNative.GetWindowThreadProcessId(window, out process) != 0 &&
+            (process != Environment.ProcessId || title is not ("11toXP Taskbar" or "11toXP Start Menu"));
     }
 
     private static ImageSource? ReadIcon(nint window)

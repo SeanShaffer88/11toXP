@@ -2,7 +2,9 @@ using System.IO;
 using System.Security.Principal;
 using System.Windows;
 using LunaDesktop.Browser;
+using LunaDesktop.Shell;
 using LunaDesktop.State;
+using Microsoft.Win32;
 
 namespace LunaDesktop;
 
@@ -20,6 +22,9 @@ public partial class App : Application
     private string? directory;
     private ThemePreferenceStore? preferencesStore;
     private bool sessionEnding;
+    private bool subscribedToDisplayChanges;
+    private int taskbarRefreshQueued;
+    private int displayRefreshRequested;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -81,7 +86,7 @@ public partial class App : Application
             preferencesStore = new ThemePreferenceStore(directory);
             var platform = new ThemePlatform(directory, ShowControl, ShowWindowsTaskbar, ExplorerRestarted, ShellFaulted,
                 path => OpenXpExplorer(coordinator?.State?.Preferences.Variant ?? LunaVariant.Blue, path),
-                ToggleTrayReveal, () => coordinator?.TrayRevealed == true);
+                ToggleTrayReveal, () => coordinator?.TrayRevealed == true, RequestTaskbarResize);
             coordinator = new ThemeCoordinator(new ThemeJournal(directory), platform, preferencesStore);
             coordinator.Load();
             themePlatform = platform;
@@ -112,6 +117,8 @@ public partial class App : Application
             }
             return;
         }
+        SystemEvents.DisplaySettingsChanged += DisplaySettingsChanged;
+        subscribedToDisplayChanges = true;
         if (coordinator.State is { Phase: ThemePhase.Active } or { Preferences.StartWithWindows: false })
         {
             try { coordinator.Resume(); }
@@ -131,6 +138,8 @@ public partial class App : Application
     internal bool CanFocusXpTaskbar => themePlatform?.CanFocusXpTaskbar == true;
     internal bool TryFocusXpTaskbar() => themePlatform?.TryFocusXpTaskbar() == true;
     internal void ClearStartupError() => startupError = null;
+    internal ShellDisplay[] GetTaskbarDisplays() => ShellDisplay.Enumerate();
+    internal event Action? TaskbarDisplaysChanged;
 
     internal void OpenXpExplorer(LunaVariant variant, string? path = null)
     {
@@ -187,6 +196,14 @@ public partial class App : Application
         control?.PerformOperation(() => coordinator?.ShowWindowsTaskbar(), "Windows taskbar shown. Repair resumes the XP taskbar.");
     }
 
+    private void RequestTaskbarResize(TaskbarButtonSize size)
+    {
+        if (sessionEnding || coordinator?.IsTaskbarPreviewActive != false)
+            return;
+        ShowControl();
+        control?.RequestTaskbarResize(size);
+    }
+
     private void ToggleTrayReveal()
     {
         if (sessionEnding || coordinator is null)
@@ -195,13 +212,36 @@ public partial class App : Application
         finally { control?.RefreshStatus(); }
     }
 
+    private void DisplaySettingsChanged(object? sender, EventArgs args)
+    {
+        Interlocked.Exchange(ref displayRefreshRequested, 1);
+        ExplorerRestarted();
+    }
+
     private void ExplorerRestarted()
     {
+        if (Dispatcher.HasShutdownStarted || Interlocked.Exchange(ref taskbarRefreshQueued, 1) != 0)
+            return;
+        Dispatcher.BeginInvoke(RefreshTaskbars);
+    }
+
+    private void RefreshTaskbars()
+    {
+        Interlocked.Exchange(ref taskbarRefreshQueued, 0);
         if (sessionEnding)
             return;
+        bool topologyChanged = Interlocked.Exchange(ref displayRefreshRequested, 0) != 0;
         try
         {
-            coordinator?.ExplorerRestarted();
+            if (topologyChanged)
+            {
+                try { coordinator?.DisplayTopologyChanged(); }
+                finally { TaskbarDisplaysChanged?.Invoke(); }
+            }
+            else
+            {
+                coordinator?.ExplorerRestarted();
+            }
             control?.RefreshStatus();
         }
         catch (Exception error) { ShellFaulted(error); }
@@ -226,6 +266,8 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        if (subscribedToDisplayChanges)
+            SystemEvents.DisplaySettingsChanged -= DisplaySettingsChanged;
         try
         {
             if (sessionEnding && coordinator?.State is { Preferences.StartWithWindows: false })

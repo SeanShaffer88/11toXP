@@ -29,6 +29,11 @@ internal static class ThemeChecks
             WithSession(TemporaryTrayRevealLifecycle);
             WithSession(TemporaryTrayRevealFailures);
             WithSession(TemporaryTrayRevealRecovery);
+            WithSession(TaskbarPreviewIsolation);
+            WithSession(TaskbarPreviewFailure);
+            WithSession(TaskbarPreviewRollbackFallback);
+            WithSession(DisplaySelectionRecovery);
+            DisplaySelectionMapping();
             WithSession(MovedExecutable);
             WithSession(SignInCollision);
             WithSession(SessionOnlyLifecycle);
@@ -329,6 +334,153 @@ internal static class ThemeChecks
         reopened.Restore();
         Require(!reopened.TrayRevealed && platform.AutoHide && !platform.Shell && journal.Load() is null,
             "Restore during a reveal returns to the originally auto-hidden taskbar.");
+    }
+
+    private static void TaskbarPreviewIsolation(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
+    {
+        var first = XpTaskbarOnly with { Taskbar = XpTaskbarOnly.Taskbar with { IsLocked = false } };
+        Require(app.NeedsTaskbarPreview(first) && !app.NeedsTaskbarPreview(first with { UseTaskbar = false }),
+            "Only an initial Apply with a taskbar needs a preview.");
+        app.BeginTaskbarPreview(first);
+        Require(app.IsTaskbarPreviewActive && platform.Shell && !platform.TrayRevealAllowed && journal.Load() is null &&
+            platform.AutoHideWrites == 0 && platform.StartupCommandReads == 0 && platform.AppearanceCaptures.Count == 0 &&
+            platform.WallpaperCalls == 0, "Preview changes only appbar windows.");
+        ExpectFailure(app.ShowWindowsTaskbar);
+        ExpectFailure(app.ToggleTrayReveal);
+        app.CancelTaskbarPreview();
+        Require(!app.IsTaskbarPreviewActive && !platform.Shell && journal.Load() is null,
+            "Cancelling the first preview leaves the original desktop and no journal.");
+
+        app.BeginTaskbarPreview(first);
+        app.CommitTaskbarPreview(() => app.Apply(null, first));
+        Require(!app.IsTaskbarPreviewActive && platform.AutoHide && journal.Load()?.Preferences.Taskbar.IsLocked == false,
+            "Keep commits the original Apply path.");
+        Require(!app.NeedsTaskbarPreview(first with { StartWithWindows = false }) &&
+            app.NeedsTaskbarPreview(first with { UseTaskbar = false }), "Only shell changes need confirmation.");
+
+        app.ToggleTrayReveal();
+        int writes = platform.AutoHideWrites;
+        int appearanceApplies = platform.AppearanceApplies.Count;
+        int startupReads = platform.StartupCommandReads;
+        var smaller = first with { Taskbar = first.Taskbar with { ButtonSize = TaskbarButtonSize.Small } };
+        app.BeginTaskbarPreview(smaller);
+        app.ExplorerRestarted();
+        Require(platform.Options?.ButtonSize == TaskbarButtonSize.Small &&
+            journal.Load()?.Preferences.Taskbar.ButtonSize == TaskbarButtonSize.Large,
+            "Explorer refresh during preview keeps its candidate separate from the journal.");
+        app.CancelTaskbarPreview();
+        Require(platform.Options?.ButtonSize == TaskbarButtonSize.Large && app.TrayRevealed &&
+            platform.AutoHideWrites == writes && !platform.AutoHide, "Cancel restores layout and retains tray reveal without writing native state.");
+        app.BeginTaskbarPreview(smaller);
+        app.CommitTaskbarPreview(() => app.KeepTaskbarResize(TaskbarButtonSize.Small));
+        Require(journal.Load()?.Preferences.Taskbar.ButtonSize == TaskbarButtonSize.Small &&
+            platform.AppearanceApplies.Count == appearanceApplies && platform.StartupCommandReads == startupReads &&
+            platform.AutoHideWrites == writes && platform.WallpaperCalls == 0, "The resize grip commits only taskbar layout.");
+        app.Restore();
+    }
+
+    private static void TaskbarPreviewFailure(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
+    {
+        app.Apply(null, XpTaskbarOnly);
+        var candidate = XpTaskbarOnly with { Variant = LunaVariant.OliveGreen };
+        platform.FailingShellVariant = candidate.Variant;
+        ExpectFailure(() => app.BeginTaskbarPreview(candidate));
+        Require(!app.IsTaskbarPreviewActive && platform.Shell && platform.Variant == XpTaskbarOnly.Variant,
+            "A failed preview restores the previous bar.");
+        platform.FailingShellVariant = null;
+        app.BeginTaskbarPreview(candidate);
+        ExpectFailure(() => app.CommitTaskbarPreview(() => throw new InvalidOperationException("Injected commit failure.")));
+        Require(!app.IsTaskbarPreviewActive && platform.Variant == XpTaskbarOnly.Variant &&
+            journal.Load()?.Preferences.Variant == XpTaskbarOnly.Variant, "Commit failure restores authoritative journal layout.");
+        app.ShowWindowsTaskbar();
+        app.BeginTaskbarPreview(candidate);
+        app.CancelTaskbarPreview();
+        Require(app.ShellPaused && !platform.Shell && !platform.AutoHide, "Cancel preserves a paused committed shell.");
+        app.Restore();
+    }
+
+    private static void TaskbarPreviewRollbackFallback(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
+    {
+        app.Apply(null, XpTaskbarOnly);
+        var candidate = XpTaskbarOnly with { Variant = LunaVariant.OliveGreen };
+        app.BeginTaskbarPreview(candidate);
+        platform.FailingShellVariant = XpTaskbarOnly.Variant;
+        ExpectFailure(app.CancelTaskbarPreview);
+        Require(!app.IsTaskbarPreviewActive && app.ShellPaused && !platform.Shell && !platform.TrayRevealAllowed &&
+            !platform.AutoHide && journal.Load() is { OriginalAutoHide: null, Preferences.Variant: LunaVariant.Blue },
+            "A failed rollback pauses all XP bars and releases owned auto-hide without changing committed options.");
+        int shellCalls = platform.ShellCalls;
+        app.ExplorerRestarted();
+        ExpectFailure(app.ToggleTrayReveal);
+        Require(platform.ShellCalls == shellCalls, "An Explorer refresh or stale tray command cannot resurrect a failed bar.");
+
+        platform.FailingShellVariant = null;
+        app.Repair(null);
+        app.BeginTaskbarPreview(candidate);
+        platform.FailingShellVariant = XpTaskbarOnly.Variant;
+        platform.FailingAutoHideTarget = false;
+        ExpectFailure(() => app.CommitTaskbarPreview(() => throw new InvalidOperationException("Injected commit failure.")));
+        Require(!app.IsTaskbarPreviewActive && app.ShellPaused && !platform.Shell && !platform.TrayRevealAllowed &&
+            platform.AutoHide && journal.Load() is { OriginalAutoHide: false, Preferences.Variant: LunaVariant.Blue } &&
+            app.LastRecoveryFailure is { Component: "windowsTaskbar" },
+            "If Windows refuses the fallback, retain the owned baseline and record a recovery failure.");
+        platform.FailingAutoHideTarget = null;
+        app.Restore();
+        Require(!platform.AutoHide && journal.Load() is null, "Restore retries the pending fallback baseline.");
+    }
+
+    private static void DisplaySelectionRecovery(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
+    {
+        app.Apply(null, XpTaskbarOnly);
+        Require(platform.AutoHide, "XP-only mode hides the native taskbar on the one selected display.");
+        var selection = XpTaskbarOnly with
+        {
+            Taskbar = XpTaskbarOnly.Taskbar with { DisplayIds = [@"DISPLAY\UnitTest"] }
+        };
+        app.BeginTaskbarPreview(selection);
+        platform.ConnectedDisplays = 2;
+        app.DisplayTopologyChanged();
+        Require(!app.IsTaskbarPreviewActive && platform.Shell && !platform.AutoHide &&
+            journal.Load()?.Preferences.Taskbar.DisplayIds is null, "Display topology changes cancel the candidate before reconciling the committed layout.");
+        app.Repair(null, selection);
+        Require(platform.Shell && !platform.AutoHide && !platform.TrayRevealAllowed &&
+            journal.Load()?.OriginalAutoHide is null, "Multi-monitor mode releases owned native auto-hide.");
+        int writes = platform.AutoHideWrites;
+        platform.HasMatchingDisplay = false;
+        app.ExplorerRestarted();
+        Require(!platform.Shell && platform.AutoHideWrites == writes &&
+            journal.Load()?.Preferences.Taskbar.DisplayIds?.Single() == @"DISPLAY\UnitTest",
+            "A disconnected selection is retained without starting an XP taskbar on a different display.");
+        platform.HasMatchingDisplay = true;
+        app.ExplorerRestarted();
+        Require(platform.Shell && !platform.TrayRevealAllowed && platform.AutoHideWrites == writes,
+            "Reconnection shows the selected bar without changing Windows auto-hide on other displays.");
+        app.Restore();
+    }
+
+    private static void DisplaySelectionMapping()
+    {
+        var left = new ShellDisplay("display-left", "Left display", false,
+            new(-1920, -120, 0, 960), new(-1920, -120, 0, 920));
+        var primary = new ShellDisplay("display-primary", "Primary display", true,
+            new(0, 0, 2560, 1440), new(0, 0, 2560, 1400));
+        var right = new ShellDisplay("display-right", "Right display", false,
+            new(2560, 100, 4480, 1180), new(2560, 100, 4480, 1140));
+        ShellDisplay[] enumerated = [right, left, primary];
+        Require(ShellDisplay.Resolve(TaskbarOptions.Default, enumerated).SequenceEqual([primary]),
+            "The default follows the primary display regardless of enumeration order.");
+
+        var selected = TaskbarOptions.Default with { DisplayIds = ["DISPLAY-LEFT", "display-right"] };
+        var matched = ShellDisplay.Resolve(selected, enumerated);
+        Require(matched.Length == 2 && matched.Contains(left) && matched.Contains(right) && !matched.Contains(primary) &&
+            matched.Single(display => display.Id == left.Id).Bounds == new ShellNative.Rectangle(-1920, -120, 0, 960),
+            "Explicit multi-select matches device IDs and preserves a negative monitor origin.");
+        Require(ShellDisplay.Resolve(selected, [primary, right, left]).ToHashSet().SetEquals(matched),
+            "Reordering connected displays does not change the explicit target set.");
+
+        var disconnected = TaskbarOptions.Default with { DisplayIds = ["display-disconnected"] };
+        Require(ShellDisplay.Resolve(disconnected, enumerated).Length == 0,
+            "A disconnected explicit choice must not fall back to the primary display.");
     }
 
     private static void SignInCollision(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
@@ -653,6 +805,10 @@ internal static class ThemeChecks
         public bool AutoHide { get; private set; }
         public bool Shell { get; private set; }
         public bool TrayRevealAllowed { get; private set; }
+        public TaskbarOptions? Options { get; private set; }
+        public LunaVariant? FailingShellVariant { get; set; }
+        public int ConnectedDisplays { get; set; } = 1;
+        public bool HasMatchingDisplay { get; set; } = true;
         public bool ShellWasStartedBeforeAutoHide { get; private set; }
         public int ShellCalls { get; private set; }
         public int AutoHideReads { get; private set; }
@@ -751,13 +907,23 @@ internal static class ThemeChecks
                 throw new InvalidOperationException("Injected appearance Restore failure.");
             AppearanceRestores.Add(components);
         }
+        public TaskbarAvailability InspectTaskbar(TaskbarOptions options) =>
+            new(HasMatchingDisplay, HasMatchingDisplay && ConnectedDisplays == 1);
+
         public void StartShell(LunaVariant variant, TaskbarOptions options, bool allowTrayReveal)
         {
             ShellCalls++;
-            Shell = true;
-            TrayRevealAllowed = allowTrayReveal;
+            if (FailingShellVariant == variant)
+                throw new InvalidOperationException("Injected shell start failure.");
+            Shell = HasMatchingDisplay;
+            TrayRevealAllowed = Shell && allowTrayReveal;
             Variant = variant;
+            Options = options;
         }
-        public void StopShell() => Shell = false;
+        public void StopShell()
+        {
+            Shell = false;
+            TrayRevealAllowed = false;
+        }
     }
 }

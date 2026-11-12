@@ -17,7 +17,7 @@ Extract the portable ZIP to a folder you plan to keep, then open `11toXP.exe`. T
 - **Restore** removes the XP-style taskbar and sign-in entry and restores the settings 11toXP saved. Restore before deleting the executable.
 - **Restore and Exit** closes 11toXP after successful restoration. A failed restore leaves the controls open for another attempt.
 
-Choose **Luna Blue**, **Luna Silver**, or **Luna Olive Green**. The taskbar and Start menu, desktop icons, cursors, and sounds each have their own control. The XP-style taskbar runs on the primary display. Use **Group Similar Windows** and the Quick Launch list to configure task buttons and the built-in File Explorer, Windows Settings, and XP Explorer shortcuts. The taskbar context menu opens the settings, switches to the Windows taskbar, or opens XP Explorer.
+Choose **Luna Blue**, **Luna Silver**, or **Luna Olive Green**. The taskbar and Start menu, desktop icons, cursors, and sounds each have their own control. The XP taskbar follows the primary display by default. Use **Displays** to choose specific screens. Use **Group Similar Windows** and the Quick Launch list to configure task buttons and the built-in File Explorer, Windows Settings, and XP Explorer shortcuts. The taskbar context menu opens the settings, switches to the Windows taskbar, or opens XP Explorer.
 
 **Open XP Explorer** opens the built-in file browser with a folder tree, task pane, and address bar. It browses local folders and opens files through Windows. **Open in Windows Explorer** opens the displayed folder for native file operations. **Use XP Explorer** routes supported taskbar and Start menu folder shortcuts to the built-in browser.
 
@@ -27,11 +27,14 @@ Choose **Luna Blue**, **Luna Silver**, or **Luna Olive Green**. The taskbar and 
 
 11toXP styles the built-in desktop icons for This PC, Documents, Network, and Recycle Bin if already visible. It uses original assets for those icons and four pointer roles, plus five original sounds for six supported events. High contrast, custom pointer sizes, and muted sound events can limit these changes. Windows Settings, native Explorer, individual app frames, system flyouts, and protected Windows screens retain their native appearance.
 
-## Current Source Build
+## 0.3.0 Beta Controls
 
-The published `v0.2.0-beta.1` predates these controls. Build from source to use them.
+Use `v0.3.0-beta.1` or later for these controls.
 
-- **Keep Windows tray visible** is checked by default, including for older preferences. While the XP taskbar is active, the Windows taskbar stays visible beneath it. Windows continues to handle its tray icons and overflow. For the XP-only layout, uncheck the option and select **Repair**. **Restore** returns the Windows taskbar to its original auto-hide setting.
+- **Taskbar Button Size** switches between Large and Small. Clear **Show task button labels** for an icon-only view with accessible names. Clear **Lock the Taskbar** to resize by dragging the top grip or using the Up and Down arrow keys while the grip has focus.
+- **Displays** follows the primary display by default. Clear **Follow the primary display** to choose which connected displays get an XP bar. Selected displays remain saved when disconnected. Windows manages its native taskbars when multiple displays are connected.
+- **Apply** or **Repair** previews changes to the XP taskbar for 15 seconds. Choose **Keep** to save the layout and apply your other selected settings. Choose **Undo**, press Esc, close the dialog, or let the timer expire to return to the previous layout. A resize from the grip saves only the taskbar size.
+- **Keep Windows tray visible** is checked by default, including for older preferences. On a single display with an active XP taskbar, this keeps the Windows taskbar visible beneath it so Windows can handle its tray icons and overflow. For the XP-only layout, uncheck the option and select **Repair**. **Restore** returns the original Windows auto-hide setting.
 - In XP-only mode, select **Show Windows Tray** beside the clock to temporarily reveal the Windows tray below the XP bar. Select **Hide Windows Tray** to return to XP-only mode. The temporary reveal ends when you repair, restore, or restart 11toXP.
 - **Start with Windows** defaults to on, including when an older recovery journal has no startup preference. Uncheck it and choose **Apply** or **Repair** to use the theme for the current Windows session. 11toXP removes its sign-in entry and attempts to restore your original settings at sign-out. If restoration was interrupted, reopening 11toXP retries it. Use **Restore and Exit** for immediate cleanup.
 - **Add Shortcut** adds a local Windows shortcut (`.lnk`) to Quick Launch. Move or remove it with the same controls used for built-in entries. 11toXP keeps the original shortcut file in place and asks Windows to open it when you click its Quick Launch button.
@@ -41,7 +44,7 @@ The published `v0.2.0-beta.1` predates these controls. Build from source to use 
 
 11toXP records original settings and active preferences in `%LOCALAPPDATA%\11toXP\theme-state.json` before applying changes. It also stores control and browser window placement and local copies of generated appearance assets. Sign-in uses the app-owned `11toXP.0348C6BA` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Reopen 11toXP and select **Restore** after an interrupted operation. If no instance is running, `11toXP.exe --restore` can perform the same recovery. A running instance returns exit code 3 for this command and can restore through its window.
 
-The current source build retains saved non-wallpaper preferences in `%LOCALAPPDATA%\11toXP\preferences.json` after **Restore**.
+11toXP retains saved non-wallpaper preferences in `%LOCALAPPDATA%\11toXP\preferences.json` after **Restore**.
 
 If you use the XP-only layout, an OS build change may leave both taskbars visible until **Repair** verifies auto-hide on the new build. The app uses Windows taskbar APIs and per-user settings. It makes no network requests. The bundled runtime can extract native libraries to the .NET temporary bundle cache at launch.
 
