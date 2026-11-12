@@ -1,5 +1,6 @@
 using System.IO;
 using LunaDesktop.Appearance;
+using LunaDesktop.Shell;
 
 namespace LunaDesktop.State;
 
@@ -19,6 +20,10 @@ internal static class ThemeChecks
             WithSession(AlreadyAutoHides);
             WithSession(MovedExecutable);
             WithSession(SignInCollision);
+            WithSession(ComponentLifecycle);
+            WithSession(InterruptedComponentChange);
+            WithSession(InterruptedWallpaperOptOut);
+            LegacyJournal();
             return 0;
         }
         catch (Exception error)
@@ -130,6 +135,104 @@ internal static class ThemeChecks
         Require(platform.Registered == "Another command" && journal.Load() is null, "Preserve an unrelated startup command.");
     }
 
+    private static void ComponentLifecycle(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
+    {
+        var initial = ThemePreferences.Default with { UseTaskbar = false, Appearance = AppearanceComponents.Icons };
+        app.Apply(null, initial);
+        Require(platform.AppearanceCaptures.SequenceEqual([AppearanceComponents.Icons]) &&
+            platform.AppearanceApplies.SequenceEqual([AppearanceComponents.Icons]) &&
+            platform.ShellCalls == 0 && platform.AutoHideReads == 0,
+            "Disabled components must be outside capture, apply, and native taskbar operations.");
+
+        var shortcuts = new[] { QuickLaunchItem.XpExplorer, QuickLaunchItem.Settings };
+        var selected = new ThemePreferences(LunaVariant.Silver, true, AppearanceComponents.Icons | AppearanceComponents.Sounds,
+            new TaskbarOptions(TaskGrouping.Always, shortcuts, true));
+        app.Repair(null, selected);
+        shortcuts[0] = QuickLaunchItem.FileExplorer;
+        Require(platform.AppearanceCaptures.SequenceEqual([AppearanceComponents.Icons, AppearanceComponents.Sounds]) &&
+            platform.Shell && platform.AutoHide && platform.Variant == LunaVariant.Silver,
+            "Repair captures newly enabled components and keeps existing baselines.");
+        Require(app.State?.Preferences.Taskbar.QuickLaunch[0] == QuickLaunchItem.XpExplorer,
+            "Journal preferences copy Quick Launch choices defensively.");
+
+        var resumed = new ThemeCoordinator(journal, platform);
+        resumed.Load();
+        resumed.Resume();
+        Require(resumed.State?.Preferences.Taskbar is { Grouping: TaskGrouping.Always, UseXpExplorer: true } options &&
+            options.QuickLaunch.SequenceEqual([QuickLaunchItem.XpExplorer, QuickLaunchItem.Settings]) &&
+            platform.AppearanceCaptures.Count == 2,
+            "Resume preserves preferences and captured baselines.");
+        resumed.Repair(null, selected with { UseTaskbar = false, Appearance = AppearanceComponents.Sounds });
+        Require(platform.AppearanceRestores.SequenceEqual([AppearanceComponents.Icons]) &&
+            journal.Load()?.AppearanceManaged == AppearanceComponents.Sounds && !platform.AutoHide && !platform.Shell,
+            "Disabling a component restores its baseline without restoring other components.");
+        resumed.Restore();
+        Require(platform.AppearanceRestores.SequenceEqual([AppearanceComponents.Icons, AppearanceComponents.Sounds]) &&
+            platform.WallpaperCalls == 0 && journal.Load() is null,
+            "Restore only visits remaining ownership and leaves wallpaper alone.");
+    }
+
+    private static void InterruptedComponentChange(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
+    {
+        var initial = ThemePreferences.Default with { Appearance = AppearanceComponents.Icons };
+        app.Apply(null, initial);
+        platform.FailAppearanceRestore = true;
+        ExpectFailure(() => app.Repair(null, initial with { Appearance = AppearanceComponents.None }));
+        Require(journal.Load() is { Preferences.Appearance: AppearanceComponents.None, AppearanceManaged: AppearanceComponents.Icons },
+            "A failed component restore preserves the requested preference and pending ownership.");
+        var resumed = new ThemeCoordinator(journal, platform);
+        resumed.Load();
+        platform.FailAppearanceRestore = false;
+        resumed.Resume();
+        Require(platform.AppearanceApplies.SequenceEqual([AppearanceComponents.Icons]) &&
+            journal.Load() is { Appearance: null, AppearanceManaged: AppearanceComponents.None },
+            "Resume retries a pending restore without reapplying the disabled component.");
+        resumed.Restore();
+    }
+
+    private static void InterruptedWallpaperOptOut(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
+    {
+        app.Apply(Image);
+        platform.FailWallpaperRestore = true;
+        ExpectFailure(() => app.Repair(null));
+        Require(journal.Load() is { WallpaperRestorePending: true, Wallpaper: not null },
+            "Wallpaper opt-out is journaled before restoration.");
+        var resumed = new ThemeCoordinator(journal, platform);
+        resumed.Load();
+        Require(resumed.State?.WallpaperSelection is null, "A pending wallpaper opt-out reopens unchecked.");
+        platform.FailWallpaperRestore = false;
+        resumed.Resume();
+        Require(platform.Wallpaper == FakePlatform.Original && journal.Load() is { Wallpaper: null, WallpaperRestorePending: false },
+            "Resume restores a previously opted-out wallpaper.");
+        resumed.Restore();
+    }
+
+    private static void LegacyJournal()
+    {
+        var directory = Directory.CreateTempSubdirectory("11toXP-legacy-");
+        var journal = new ThemeJournal(directory.FullName);
+        try
+        {
+            File.WriteAllText(Path.Combine(directory.FullName, "theme-state.json"),
+                """{"Schema":1,"Phase":1,"Appearance":{"Version":1,"Values":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]}}""");
+            var platform = new FakePlatform();
+            var app = new ThemeCoordinator(journal, platform);
+            app.Load();
+            app.Resume();
+            Require(platform.Variant == LunaVariant.Blue && platform.AppearanceCaptures.Count == 0 &&
+                platform.AppearanceApplies.SequenceEqual([AppearanceComponents.All]),
+                "Legacy active journals keep their original behavior and backup.");
+            app.Restore();
+            Require(platform.AppearanceRestores.SequenceEqual([AppearanceComponents.All]) && journal.Load() is null,
+                "Legacy ownership remains restorable.");
+        }
+        finally
+        {
+            journal.Clear();
+            directory.Delete();
+        }
+    }
+
     private static void WithSession(Action<ThemeCoordinator, ThemeJournal, FakePlatform> test)
     {
         var directory = Directory.CreateTempSubdirectory("11toXP-check-");
@@ -167,10 +270,16 @@ internal static class ThemeChecks
         public bool Shell { get; private set; }
         public bool ShellWasStartedBeforeAutoHide { get; private set; }
         public int ShellCalls { get; private set; }
+        public int AutoHideReads { get; private set; }
+        public LunaVariant Variant { get; private set; }
         public int Captures { get; private set; }
         public int WallpaperCalls { get; private set; }
         public bool FailWallpaperApply { get; set; }
         public bool FailWallpaperRestore { get; set; }
+        public bool FailAppearanceRestore { get; set; }
+        public List<AppearanceComponents> AppearanceCaptures { get; } = [];
+        public List<AppearanceComponents> AppearanceApplies { get; } = [];
+        public List<AppearanceComponents> AppearanceRestores { get; } = [];
         public string Wallpaper { get; private set; } = Original;
         public string? Registered { get; set; }
         public string CurrentCommand { get; set; } = "\"C:\\Tools\\11toXP.exe\" --background";
@@ -188,7 +297,11 @@ internal static class ThemeChecks
             if (Registered == command)
                 Registered = null;
         }
-        public bool? ReadAutoHide() => AutoHide;
+        public bool? ReadAutoHide()
+        {
+            AutoHideReads++;
+            return AutoHide;
+        }
         public bool SetAutoHide(bool enabled)
         {
             if (enabled)
@@ -216,14 +329,25 @@ internal static class ThemeChecks
                 throw new InvalidOperationException("Injected wallpaper Restore failure.");
             Wallpaper = plan.Monitors[0].Original;
         }
-        public AppearanceSnapshot? CaptureAppearance() => null;
+        public AppearanceSnapshot CaptureAppearance(AppearanceComponents components, AppearanceSnapshot? retained)
+        {
+            AppearanceCaptures.Add(components);
+            return retained ?? new AppearanceSnapshot(1, new AppearanceValue?[16]);
+        }
         public void ValidateAppearance(AppearanceSnapshot baseline) { }
-        public void ApplyAppearance(AppearanceSnapshot baseline) { }
-        public void RestoreAppearance(AppearanceSnapshot baseline) { }
-        public void StartShell()
+        public void ApplyAppearance(AppearanceSnapshot baseline, AppearanceComponents components) =>
+            AppearanceApplies.Add(components);
+        public void RestoreAppearance(AppearanceSnapshot baseline, AppearanceComponents components)
+        {
+            if (FailAppearanceRestore)
+                throw new InvalidOperationException("Injected appearance Restore failure.");
+            AppearanceRestores.Add(components);
+        }
+        public void StartShell(LunaVariant variant, TaskbarOptions options)
         {
             ShellCalls++;
             Shell = true;
+            Variant = variant;
         }
         public void StopShell() => Shell = false;
     }

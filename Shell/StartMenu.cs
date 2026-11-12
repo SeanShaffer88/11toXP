@@ -28,7 +28,8 @@ internal sealed class StartMenu : Window
     private bool programsVisible;
     private bool dismissing;
 
-    internal StartMenu(Window owner, LunaVisuals visuals, Action openControl, Action? showWindowsTaskbar)
+    internal StartMenu(Window owner, LunaVisuals visuals, Action openControl, Action? showWindowsTaskbar,
+        Action<string?>? openXpExplorer = null, bool useXpExplorer = false)
     {
         Owner = owner;
         this.visuals = visuals;
@@ -64,15 +65,26 @@ internal sealed class StartMenu : Window
         mainPage.Children.Add(left);
         mainPage.Children.Add(right);
 
-        firstAction = AddCommand(left, "File Explorer", () => LaunchExplorer(), "folder", emphasized: true);
+        if (openXpExplorer is not null && useXpExplorer)
+        {
+            firstAction = AddCommand(left, "XP Explorer", () => openXpExplorer(null), "folder", emphasized: true);
+            AddCommand(left, "Windows File Explorer", () => LaunchExplorer(), "folder");
+        }
+        else
+        {
+            firstAction = AddCommand(left, "File Explorer", () => LaunchExplorer(), "folder", emphasized: true);
+            if (openXpExplorer is not null)
+                AddCommand(left, "XP Explorer", () => openXpExplorer(null), "folder");
+        }
         AddCommand(left, "Settings", () => LaunchFile("ms-settings:"), "settings");
         AddCommand(left, "Run…", () => InvokeShell("FileRun"), "run");
         AddDivider(left);
         AddCommand(left, "All Programs  ›", ShowPrograms, "programs", closeBeforeAction: false, emphasized: true);
 
-        AddFolder(right, "My Documents", Environment.SpecialFolder.MyDocuments);
-        AddFolder(right, "My Pictures", Environment.SpecialFolder.MyPictures);
-        AddFolder(right, "My Music", Environment.SpecialFolder.MyMusic);
+        Action<string?>? openFolder = useXpExplorer ? openXpExplorer : null;
+        AddFolder(right, "My Documents", Environment.SpecialFolder.MyDocuments, openFolder);
+        AddFolder(right, "My Pictures", Environment.SpecialFolder.MyPictures, openFolder);
+        AddFolder(right, "My Music", Environment.SpecialFolder.MyMusic, openFolder);
         AddCommand(right, "This PC", () => InvokeShell("Explore", 17), "computer", emphasized: true);
         AddDivider(right);
         if (showWindowsTaskbar is null)
@@ -101,7 +113,7 @@ internal sealed class StartMenu : Window
             Height = 41,
             Margin = new Thickness(10, 0, 9, 0),
             BorderThickness = new Thickness(2),
-            BorderBrush = visuals.BarText,
+            BorderBrush = visuals.MenuHeaderText,
             CornerRadius = new CornerRadius(3),
             Background = visuals.HighContrast ? SystemColors.ControlBrush : LunaVisuals.Gradient((0, 0xA4DDFC), (1, 0x4C7CAA)),
             VerticalAlignment = VerticalAlignment.Center,
@@ -113,7 +125,7 @@ internal sealed class StartMenu : Window
         header.Children.Add(new TextBlock
         {
             Text = Environment.UserName,
-            Foreground = visuals.BarText,
+            Foreground = visuals.MenuHeaderText,
             FontSize = 18,
             FontWeight = FontWeights.Bold,
             VerticalAlignment = VerticalAlignment.Center,
@@ -131,7 +143,7 @@ internal sealed class StartMenu : Window
             Background = visuals.MenuHeader,
             Padding = new Thickness(8, 3, 8, 3)
         };
-        Button settings = visuals.NewButton("11toXP Settings", "11toXP", visuals.TaskButtonStyle, Brushes.Transparent);
+        Button settings = visuals.NewButton("11toXP Settings", "11toXP", visuals.MenuHeaderButtonStyle, Brushes.Transparent);
         settings.Height = 32;
         settings.MinWidth = 82;
         settings.HorizontalAlignment = HorizontalAlignment.Right;
@@ -141,14 +153,17 @@ internal sealed class StartMenu : Window
         root.Children.Add(footer);
     }
 
-    private void AddFolder(Panel parent, string label, Environment.SpecialFolder folder)
+    private void AddFolder(Panel parent, string label, Environment.SpecialFolder folder, Action<string?>? openXpFolder)
     {
         AddCommand(parent, label, () =>
         {
             string path = Environment.GetFolderPath(folder);
             if (string.IsNullOrWhiteSpace(path))
                 throw new InvalidOperationException("Windows did not provide a location for this folder.");
-            LaunchFile(path);
+            if (openXpFolder is not null)
+                openXpFolder(path);
+            else
+                LaunchFile(path);
         }, "folder", emphasized: true);
     }
 

@@ -15,7 +15,12 @@ internal sealed class ThemeState
     public string? StartupCommand { get; set; }
     public string? PreviousStartupCommand { get; set; }
     public WallpaperPlan? Wallpaper { get; set; }
+    public bool WallpaperRestorePending { get; set; }
     public AppearanceSnapshot? Appearance { get; set; }
+    public ThemePreferences Preferences { get; set; } = ThemePreferences.Default;
+    public AppearanceComponents? AppearanceManaged { get; set; }
+
+    internal WallpaperPlan? WallpaperSelection => WallpaperRestorePending ? null : Wallpaper;
 }
 
 internal sealed class ThemeJournal(string directory)

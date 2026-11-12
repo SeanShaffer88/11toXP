@@ -32,6 +32,7 @@ internal sealed class WindowTasks : IDisposable
     private readonly nint barWindow;
     private readonly Func<nint> menuWindow;
     private readonly DispatcherTimer refreshTimer;
+    private readonly bool groupWindows;
     private readonly ShellNative.WinEventCallback callback;
     private readonly List<nint> hooks = [];
     private List<TaskWindow> current = [];
@@ -39,10 +40,11 @@ internal sealed class WindowTasks : IDisposable
     private nint lastTaskForeground;
     private bool disposed;
 
-    internal WindowTasks(nint barWindow, Func<nint> menuWindow, Dispatcher dispatcher)
+    internal WindowTasks(nint barWindow, Func<nint> menuWindow, Dispatcher dispatcher, bool groupWindows = false)
     {
         this.barWindow = barWindow;
         this.menuWindow = menuWindow;
+        this.groupWindows = groupWindows;
         callback = OnWinEvent;
         refreshTimer = new DispatcherTimer(DispatcherPriority.Background, dispatcher)
         {
@@ -121,10 +123,12 @@ internal sealed class WindowTasks : IDisposable
             if (remaining.Count >= MaxTasks || !TryReadTask(window, menu, out string title, out uint process))
                 return true;
 
-            ImageSource? icon = previous.TryGetValue(window, out TaskWindow? old) && old.Process == process
-                ? old.Icon
-                : ReadIcon(window);
-            remaining.Add(window, new TaskWindow(window, process, title, icon));
+            bool sameWindow = previous.TryGetValue(window, out TaskWindow? old) && old.Process == process;
+            ImageSource? icon = sameWindow ? old!.Icon : ReadIcon(window);
+            TaskIdentity? identity = null;
+            if (groupWindows)
+                identity = sameWindow && old!.Title == title ? old.Identity : TaskIdentity.Read(window, process);
+            remaining.Add(window, new TaskWindow(window, process, title, icon, identity));
             discovered.Add(window);
             return true;
         }, 0);
@@ -217,13 +221,20 @@ internal sealed class WindowTasks : IDisposable
 
     internal bool SwitchTo(TaskWindow task)
     {
-        if (ShellNative.GetWindowThreadProcessId(task.Handle, out uint process) == 0 || process != task.Process)
+        if (!IsCurrent(task))
             return false;
 
         ObserveForeground(ShellNative.GetForegroundWindow());
         if (!ShellNative.IsIconic(task.Handle) && lastTaskForeground == task.Handle)
-            return ShellNative.ShowWindowAsync(task.Handle, 6); // SW_MINIMIZE
+            return Minimize(task);
 
+        return Activate(task);
+    }
+
+    internal static bool Activate(TaskWindow task)
+    {
+        if (!IsCurrent(task))
+            return false;
         if (ShellNative.IsIconic(task.Handle))
             ShellNative.ShowWindowAsync(task.Handle, 9); // SW_RESTORE
         nint target = ShellNative.GetLastActivePopup(task.Handle);
@@ -231,6 +242,23 @@ internal sealed class WindowTasks : IDisposable
             target = task.Handle;
         return ShellNative.SetForegroundWindow(target);
     }
+
+    internal static bool Minimize(TaskWindow task) =>
+        IsCurrent(task) && ShellNative.ShowWindowAsync(task.Handle, 6);
+
+    internal static bool Close(TaskWindow task)
+    {
+        if (!IsCurrent(task))
+            return false;
+        var title = new StringBuilder(512);
+        return ShellNative.GetWindowTextW(task.Handle, title, title.Capacity) != 0 &&
+               title.ToString().Trim() == task.Title &&
+               ShellNative.PostMessageW(task.Handle, 0x0010, 0, 0);
+    }
+
+    private static bool IsCurrent(TaskWindow task) =>
+        ShellNative.IsWindowVisible(task.Handle) &&
+        ShellNative.GetWindowThreadProcessId(task.Handle, out uint process) != 0 && process == task.Process;
 
     public void Dispose()
     {
@@ -245,4 +273,4 @@ internal sealed class WindowTasks : IDisposable
     }
 }
 
-internal sealed record TaskWindow(nint Handle, uint Process, string Title, ImageSource? Icon);
+internal sealed record TaskWindow(nint Handle, uint Process, string Title, ImageSource? Icon, TaskIdentity? Identity = null);

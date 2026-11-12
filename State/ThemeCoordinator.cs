@@ -16,19 +16,22 @@ internal interface IThemePlatform
     WallpaperPlan CaptureWallpaper(string image);
     void ApplyWallpaper(WallpaperPlan plan);
     void RestoreWallpaper(WallpaperPlan plan);
-    AppearanceSnapshot? CaptureAppearance();
+    AppearanceSnapshot CaptureAppearance(AppearanceComponents components, AppearanceSnapshot? retained);
     void ValidateAppearance(AppearanceSnapshot baseline);
-    void ApplyAppearance(AppearanceSnapshot baseline);
-    void RestoreAppearance(AppearanceSnapshot baseline);
-    void StartShell();
+    void ApplyAppearance(AppearanceSnapshot baseline, AppearanceComponents components);
+    void RestoreAppearance(AppearanceSnapshot baseline, AppearanceComponents components);
+    void StartShell(LunaVariant variant, TaskbarOptions options);
     void StopShell();
 }
 
 internal sealed class ThemePlatform(
-    string directory, Action openControl, Action showWindowsTaskbar, Action explorerRestarted, Action<Exception> shellFaulted) : IThemePlatform
+    string directory, Action openControl, Action showWindowsTaskbar, Action explorerRestarted,
+    Action<Exception> shellFaulted, Action<string?> openXpExplorer) : IThemePlatform
 {
     private readonly DesktopAppearance appearance = new(directory);
     private LunaShell? shell;
+    private LunaVariant shellVariant;
+    private TaskbarOptions? shellOptions;
 
     public int Build => Environment.OSVersion.Version.Build;
     public string StartupCommand() => WindowsSession.StartupCommand();
@@ -40,25 +43,33 @@ internal sealed class ThemePlatform(
     public WallpaperPlan CaptureWallpaper(string image) => DesktopWallpaper.Capture(image);
     public void ApplyWallpaper(WallpaperPlan plan) => DesktopWallpaper.Apply(plan);
     public void RestoreWallpaper(WallpaperPlan plan) => DesktopWallpaper.Restore(plan);
-    public AppearanceSnapshot CaptureAppearance() => appearance.Capture();
+    public AppearanceSnapshot CaptureAppearance(AppearanceComponents components, AppearanceSnapshot? retained) =>
+        appearance.Capture(components, retained);
     public void ValidateAppearance(AppearanceSnapshot baseline) => appearance.Validate(baseline);
-    public void ApplyAppearance(AppearanceSnapshot baseline) => appearance.Apply(baseline);
-    public void RestoreAppearance(AppearanceSnapshot baseline) => appearance.Restore(baseline);
+    public void ApplyAppearance(AppearanceSnapshot baseline, AppearanceComponents components) =>
+        appearance.Apply(baseline, components);
+    public void RestoreAppearance(AppearanceSnapshot baseline, AppearanceComponents components) =>
+        appearance.Restore(baseline, components);
 
-    public void StartShell()
+    public void StartShell(LunaVariant variant, TaskbarOptions options)
     {
-        if (shell is not null)
+        if (shell is not null && shellVariant == variant && shellOptions is { } previous &&
+            previous.Grouping == options.Grouping && previous.UseXpExplorer == options.UseXpExplorer &&
+            previous.QuickLaunch.SequenceEqual(options.QuickLaunch))
         {
             shell.Repair();
             return;
         }
-        var candidate = new LunaShell(openControl, showWindowsTaskbar);
+        StopShell();
+        var candidate = new LunaShell(openControl, showWindowsTaskbar, variant, options, openXpExplorer);
         candidate.ExplorerRestarted += explorerRestarted;
         candidate.ShellFaulted += shellFaulted;
         try
         {
             candidate.Start();
             shell = candidate;
+            shellVariant = variant;
+            shellOptions = options;
         }
         catch
         {
@@ -75,6 +86,7 @@ internal sealed class ThemePlatform(
         shell.ShellFaulted -= shellFaulted;
         shell.Dispose();
         shell = null;
+        shellOptions = null;
     }
 }
 
@@ -93,13 +105,19 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
         State = journal.Load();
         if (State is not { } state)
             return;
+        state.Preferences = state.Preferences?.CheckedCopy() ??
+            throw new InvalidDataException("The appearance options are missing.");
+        var managed = ManagedAppearance(state);
+        if ((managed & ~AppearanceComponents.All) != 0 ||
+            (managed == AppearanceComponents.None) != (state.Appearance is null))
+            throw new InvalidDataException("The appearance restore record is invalid.");
         if (state.StartupCommand is { } command && !WindowsSession.IsStartupCommand(command) ||
             state.PreviousStartupCommand is { } previous && !WindowsSession.IsStartupCommand(previous))
             throw new InvalidDataException("The sign-in restore record is invalid.");
         if (state.Wallpaper is { } wallpaper)
         {
             DesktopWallpaper.Validate(wallpaper);
-            WallpaperStatus = "Opted in";
+            WallpaperStatus = state.WallpaperRestorePending ? "Restore pending" : "Opted in";
         }
         if (state.Appearance is { } appearance)
         {
@@ -111,16 +129,21 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
             CompatibilityStatus = "Restore pending";
     }
 
-    public void Apply(string? image)
+    public void Apply(string? image, ThemePreferences? preferences = null)
     {
         if (State is not null)
             throw new InvalidOperationException("An existing restore record needs Repair or Restore.");
+        var options = (preferences ?? ThemePreferences.Default).CheckedCopy();
         var next = new ThemeState
         {
             Phase = ThemePhase.Applying,
             StartupCommand = platform.StartupCommand(),
             Wallpaper = image is null ? null : platform.CaptureWallpaper(image),
-            Appearance = platform.CaptureAppearance()
+            Preferences = options,
+            AppearanceManaged = options.Appearance,
+            Appearance = options.Appearance == AppearanceComponents.None
+                ? null
+                : platform.CaptureAppearance(options.Appearance, retained: null)
         };
         journal.Save(next);
         State = next;
@@ -142,9 +165,13 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
         }
     }
 
-    public void Repair(string? image)
+    public void Repair(string? image, ThemePreferences? preferences = null)
     {
         var state = ActiveState();
+        var options = (preferences ?? state.Preferences).CheckedCopy();
+        var previous = state.Preferences;
+        var previousWallpaper = state.Wallpaper;
+        var previousPending = state.WallpaperRestorePending;
         if (image is not null)
         {
             var wallpaper = state.Wallpaper is { } existing
@@ -152,13 +179,20 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
                 : platform.CaptureWallpaper(image);
             DesktopWallpaper.Validate(wallpaper);
             state.Wallpaper = wallpaper;
-            journal.Save(state);
+            state.WallpaperRestorePending = false;
         }
-        else if (state.Wallpaper is { } wallpaper)
+        else if (state.Wallpaper is not null)
         {
-            platform.RestoreWallpaper(wallpaper);
-            state.Wallpaper = null;
-            journal.Save(state);
+            state.WallpaperRestorePending = true;
+        }
+        state.Preferences = options;
+        try { journal.Save(state); }
+        catch
+        {
+            state.Preferences = previous;
+            state.Wallpaper = previousWallpaper;
+            state.WallpaperRestorePending = previousPending;
+            throw;
         }
         RepairCore(state, verifyBuild: true);
     }
@@ -171,7 +205,7 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
 
     public void ExplorerRestarted()
     {
-        if (ShellPaused || State is not { Phase: ThemePhase.Active } state)
+        if (ShellPaused || State is not { Phase: ThemePhase.Active, Preferences.UseTaskbar: true } state)
             return;
         RefreshShell(state, verifyBuild: false);
     }
@@ -223,19 +257,19 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
         }
         if (state.Appearance is { } appearance)
         {
-            AttemptRestore("Appearance", () => platform.RestoreAppearance(appearance), () =>
+            RunComponent("Appearance", () =>
             {
-                state.Appearance = null;
+                platform.RestoreAppearance(appearance, ManagedAppearance(state));
+                SaveAppearance(state, null, AppearanceComponents.None);
                 AppearanceStatus = "Windows settings";
-            }, errors);
+            }, () => AppearanceStatus = "Restore pending", errors);
         }
         if (state.Wallpaper is { } wallpaper)
         {
-            AttemptRestore("Wallpaper", () => platform.RestoreWallpaper(wallpaper), () =>
+            RunComponent("Wallpaper", () =>
             {
-                state.Wallpaper = null;
-                WallpaperStatus = "Unmanaged";
-            }, errors);
+                FinishWallpaperRestore(state, wallpaper);
+            }, () => WallpaperStatus = "Restore pending", errors);
         }
         if (errors.Count != 0)
             throw new InvalidOperationException(string.Join(Environment.NewLine, errors));
@@ -256,21 +290,19 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
         var errors = new List<string>();
         ShellPaused = false;
         RunComponent("XP taskbar", () => RefreshShell(state, verifyBuild), () => ShellStatus = "Needs repair", errors);
-        if (state.Appearance is { } appearance)
-        {
-            RunComponent("Appearance", () =>
-            {
-                platform.ApplyAppearance(appearance);
-                AppearanceStatus = "XP-style";
-            }, () => AppearanceStatus = "Needs repair", errors);
-        }
+        RunComponent("Appearance", () => ReconcileAppearance(state), () => AppearanceStatus = "Needs repair", errors);
         if (state.Wallpaper is { } wallpaper)
         {
             RunComponent("Wallpaper", () =>
             {
-                platform.ApplyWallpaper(wallpaper);
-                WallpaperStatus = "Opted in and applied";
-            }, () => WallpaperStatus = "Needs repair", errors);
+                if (state.WallpaperRestorePending)
+                    FinishWallpaperRestore(state, wallpaper);
+                else
+                {
+                    platform.ApplyWallpaper(wallpaper);
+                    WallpaperStatus = "Opted in and applied";
+                }
+            }, () => WallpaperStatus = state.WallpaperRestorePending ? "Restore pending" : "Needs repair", errors);
         }
         else
         {
@@ -285,6 +317,60 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
             CompatibilityStatus = "Repair needed";
             throw new InvalidOperationException(string.Join(Environment.NewLine, errors));
         }
+    }
+
+    private static AppearanceComponents ManagedAppearance(ThemeState state) =>
+        state.AppearanceManaged ?? (state.Appearance is null ? AppearanceComponents.None : AppearanceComponents.All);
+
+    private void ReconcileAppearance(ThemeState state)
+    {
+        var managed = ManagedAppearance(state);
+        var selected = state.Preferences.Appearance;
+        var removed = managed & ~selected;
+        if (removed != AppearanceComponents.None && state.Appearance is { } previous)
+        {
+            platform.RestoreAppearance(previous, removed);
+            managed &= ~removed;
+            var remaining = managed == AppearanceComponents.None ? null : DesktopAppearance.Retain(previous, managed);
+            SaveAppearance(state, remaining, managed);
+        }
+        var added = selected & ~managed;
+        if (added != AppearanceComponents.None)
+            SaveAppearance(state, platform.CaptureAppearance(added, state.Appearance), managed | added);
+        if (state.Appearance is { } appearance)
+            platform.ApplyAppearance(appearance, selected);
+        AppearanceStatus = selected == AppearanceComponents.None ? "Windows settings" : $"XP-style: {selected}";
+    }
+
+    private void SaveAppearance(ThemeState state, AppearanceSnapshot? snapshot, AppearanceComponents managed)
+    {
+        var previous = state.Appearance;
+        var previousManaged = state.AppearanceManaged;
+        state.Appearance = snapshot;
+        state.AppearanceManaged = managed;
+        try { journal.Save(state); }
+        catch
+        {
+            state.Appearance = previous;
+            state.AppearanceManaged = previousManaged;
+            throw;
+        }
+    }
+
+    private void FinishWallpaperRestore(ThemeState state, WallpaperPlan wallpaper)
+    {
+        platform.RestoreWallpaper(wallpaper);
+        var previousPending = state.WallpaperRestorePending;
+        state.Wallpaper = null;
+        state.WallpaperRestorePending = false;
+        try { journal.Save(state); }
+        catch
+        {
+            state.Wallpaper = wallpaper;
+            state.WallpaperRestorePending = previousPending;
+            throw;
+        }
+        WallpaperStatus = "Unmanaged";
     }
 
     private void RefreshStartup(ThemeState state, bool allowMove)
@@ -317,7 +403,15 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
 
     private void RefreshShell(ThemeState state, bool verifyBuild)
     {
-        try { platform.StartShell(); }
+        if (!state.Preferences.UseTaskbar)
+        {
+            platform.StopShell();
+            RestoreAutoHide(state);
+            ShellStatus = "Windows taskbar";
+            CompatibilityStatus = "XP taskbar disabled";
+            return;
+        }
+        try { platform.StartShell(state.Preferences.Variant, state.Preferences.Taskbar); }
         catch
         {
             RestoreAutoHide(state);
@@ -383,7 +477,12 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
         if (platform.ReadAutoHide() != original && !platform.SetAutoHide(original))
             throw new InvalidOperationException("Windows did not restore taskbar auto-hide. Try again after Explorer is ready.");
         state.OriginalAutoHide = null;
-        journal.Save(state);
+        try { journal.Save(state); }
+        catch
+        {
+            state.OriginalAutoHide = original;
+            throw;
+        }
     }
 
     private void AttemptRestore(string name, Action restore, Action finish, List<string> errors) =>

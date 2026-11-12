@@ -27,7 +27,10 @@ public sealed class LunaShell : IDisposable
     private readonly Dispatcher dispatcher = Dispatcher.CurrentDispatcher;
     private readonly Action openControl;
     private readonly Action? showWindowsTaskbar;
-    private readonly Dictionary<nint, TaskButton> taskButtons = [];
+    private readonly Dictionary<TaskbarKey, TaskButton> taskButtons = [];
+    private readonly LunaVariant variant;
+    private readonly TaskbarOptions options;
+    private readonly Action<string?>? openXpExplorer;
     private readonly DispatcherTimer clockTimer;
     private readonly uint callbackMessage;
     private readonly uint taskbarCreatedMessage;
@@ -35,7 +38,8 @@ public sealed class LunaShell : IDisposable
     private StartMenu? menu;
     private HwndSource? source;
     private WindowTasks? tasks;
-    private LunaVisuals visuals = new();
+    private LunaVisuals visuals;
+    private ContextMenu? openContextMenu;
     private StackPanel? taskPanel;
     private ScrollViewer? taskScroller;
     private StackPanel? quickLaunch;
@@ -52,9 +56,20 @@ public sealed class LunaShell : IDisposable
     private bool disposed;
 
     public LunaShell(Action openControl, Action? showWindowsTaskbar = null)
+        : this(openControl, showWindowsTaskbar, LunaVariant.Blue, TaskbarOptions.Default, null)
+    {
+    }
+
+    internal LunaShell(Action openControl, Action? showWindowsTaskbar, LunaVariant variant,
+        TaskbarOptions options, Action<string?>? openXpExplorer)
     {
         this.openControl = openControl ?? throw new ArgumentNullException(nameof(openControl));
         this.showWindowsTaskbar = showWindowsTaskbar;
+        this.variant = variant;
+        options.Validate();
+        this.options = options with { QuickLaunch = [.. options.QuickLaunch] };
+        this.openXpExplorer = openXpExplorer;
+        visuals = new LunaVisuals(variant);
         callbackMessage = ShellNative.RegisterWindowMessageW("11toXP.AppBar.7A7229A8");
         taskbarCreatedMessage = ShellNative.RegisterWindowMessageW("TaskbarCreated");
         if (callbackMessage == 0 || taskbarCreatedMessage == 0)
@@ -107,7 +122,8 @@ public sealed class LunaShell : IDisposable
             LayoutBar();
             bar.Opacity = 1;
 
-            tasks = new WindowTasks(handle, () => menu is null ? 0 : new WindowInteropHelper(menu).Handle, dispatcher);
+            tasks = new WindowTasks(handle, () => menu is null ? 0 : new WindowInteropHelper(menu).Handle, dispatcher,
+                options.Grouping == TaskGrouping.Always);
             tasks.Changed += UpdateTasks;
             tasks.Start();
             UpdateClock();
@@ -346,7 +362,7 @@ public sealed class LunaShell : IDisposable
 
         taskButtons.Clear();
         bar.Background = visuals.Bar;
-        var layout = new Grid { Background = visuals.Bar };
+        var layout = new Grid { Background = visuals.Bar, ContextMenu = CreateBarContextMenu() };
         foreach (GridLength width in new[] { GridLength.Auto, GridLength.Auto, new GridLength(1, GridUnitType.Star),
                                             GridLength.Auto, GridLength.Auto })
             layout.ColumnDefinitions.Add(new ColumnDefinition { Width = width });
@@ -367,9 +383,10 @@ public sealed class LunaShell : IDisposable
         AddColumn(layout, start, 0);
 
         quickLaunch = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(6, 2, 4, 2) };
-        AddQuickLaunch("File Explorer", "M 1,5 L 8,5 10,8 19,8 19,19 1,19 Z", 0xFFD46D, () => StartMenu.LaunchExplorer());
-        AddQuickLaunch("Settings", "M 2,3 L 18,3 18,19 2,19 Z M 6,7 L 6,15 9,15 9,7 Z M 12,7 L 12,15 15,15 15,7 Z",
-            0x9FD6F1, () => StartMenu.LaunchFile("ms-settings:"));
+        foreach (QuickLaunchItem shortcut in options.QuickLaunch)
+            AddQuickLaunch(shortcut);
+        if (quickLaunch.Children.Count == 0)
+            quickLaunch.Visibility = Visibility.Collapsed;
         AddColumn(layout, quickLaunch, 1);
 
         taskPanel = new StackPanel { Orientation = Orientation.Horizontal };
@@ -419,6 +436,25 @@ public sealed class LunaShell : IDisposable
         grid.Children.Add(child);
     }
 
+    private void AddQuickLaunch(QuickLaunchItem item)
+    {
+        switch (item)
+        {
+            case QuickLaunchItem.FileExplorer:
+                AddQuickLaunch("Windows File Explorer", "M 1,5 L 8,5 10,8 19,8 19,19 1,19 Z", 0xFFD46D,
+                    () => StartMenu.LaunchExplorer());
+                break;
+            case QuickLaunchItem.Settings:
+                AddQuickLaunch("Windows Settings", "M 2,3 L 18,3 18,19 2,19 Z M 6,7 L 6,15 9,15 9,7 Z M 12,7 L 12,15 15,15 15,7 Z",
+                    0x9FD6F1, () => StartMenu.LaunchFile("ms-settings:"));
+                break;
+            case QuickLaunchItem.XpExplorer when openXpExplorer is not null:
+                AddQuickLaunch("XP Explorer", "M 1,5 L 8,5 10,8 19,8 19,19 1,19 Z M 4,11 L 16,11 16,15 4,15 Z",
+                    0xF4BD68, () => openXpExplorer(null));
+                break;
+        }
+    }
+
     private void AddQuickLaunch(string label, string geometry, uint color, Action action)
     {
         Brush fill = visuals.HighContrast ? SystemColors.ControlTextBrush : LunaVisuals.Solid(color);
@@ -430,48 +466,138 @@ public sealed class LunaShell : IDisposable
         quickLaunch!.Children.Add(button);
     }
 
+    private ContextMenu CreateBarContextMenu()
+    {
+        ContextMenu context = CreateContextMenu();
+        AutomationProperties.SetName(context, "Taskbar Menu");
+        context.Items.Add(MenuCommand("Taskbar Settings…", () => RunFromBar(openControl)));
+        if (openXpExplorer is not null)
+            context.Items.Add(MenuCommand("Open XP Explorer", () => RunFromBar(() => openXpExplorer(null))));
+        if (showWindowsTaskbar is not null)
+        {
+            context.Items.Add(new Separator());
+            context.Items.Add(MenuCommand("Show Windows Taskbar", () => RunFromBar(showWindowsTaskbar)));
+        }
+        return context;
+    }
+
+    private ContextMenu CreateContextMenu()
+    {
+        var context = new ContextMenu
+        {
+            FontFamily = new FontFamily("Tahoma"),
+            FontSize = 13,
+            Background = visuals.HighContrast ? SystemColors.MenuBrush : LunaVisuals.Solid(0xF5F3EA),
+            Foreground = visuals.HighContrast ? SystemColors.MenuTextBrush : visuals.MenuText,
+            BorderBrush = visuals.MenuEdge,
+            BorderThickness = new Thickness(1)
+        };
+        context.Opened += (_, _) =>
+        {
+            if (openContextMenu is { } previous && previous != context)
+                previous.IsOpen = false;
+            openContextMenu = context;
+        };
+        context.Closed += (_, _) =>
+        {
+            if (openContextMenu == context)
+                openContextMenu = null;
+        };
+        return context;
+    }
+
+    private static MenuItem MenuCommand(string label, Action action)
+    {
+        var item = new MenuItem { Header = label };
+        item.Click += (_, _) => action();
+        return item;
+    }
+
+    private void FillTaskMenu(ContextMenu context, TaskbarEntry entry, bool includeActions)
+    {
+        context.Items.Clear();
+        AutomationProperties.SetName(context, entry.IsGroup ? "Open Windows" : "Window Menu");
+        foreach (TaskWindow window in entry.Windows)
+        {
+            if (!includeActions)
+            {
+                context.Items.Add(MenuCommand(window.Title, () => CompleteWindowAction(WindowTasks.Activate(window))));
+                continue;
+            }
+
+            var target = entry.IsGroup ? new MenuItem { Header = window.Title } : null;
+            ItemCollection commands = target?.Items ?? context.Items;
+            commands.Add(MenuCommand("Switch To", () => CompleteWindowAction(WindowTasks.Activate(window))));
+            commands.Add(MenuCommand("Minimize", () => CompleteWindowAction(WindowTasks.Minimize(window))));
+            commands.Add(new Separator());
+            commands.Add(MenuCommand("Close", () => CompleteWindowAction(WindowTasks.Close(window))));
+            if (target is not null)
+                context.Items.Add(target);
+        }
+    }
+
+    private void CompleteWindowAction(bool succeeded)
+    {
+        if (succeeded)
+            return;
+        System.Media.SystemSounds.Beep.Play();
+        tasks?.Refresh();
+    }
+
     private void UpdateTasks(IReadOnlyList<TaskWindow> windows, nint active)
     {
         if (taskPanel is null)
             return;
-        HashSet<nint> desired = windows.Select(task => task.Handle).ToHashSet();
-        foreach (nint old in taskButtons.Keys.Where(handle => !desired.Contains(handle)).ToArray())
+        TaskbarEntry[] entries = TaskbarEntry.Build(windows, options.Grouping);
+        HashSet<TaskbarKey> desired = entries.Select(entry => entry.Key).ToHashSet();
+        foreach (TaskbarKey old in taskButtons.Keys.Where(key => !desired.Contains(key)).ToArray())
         {
+            if (taskButtons[old].Button.ContextMenu is { IsOpen: true } menu)
+                menu.IsOpen = false;
             taskPanel.Children.Remove(taskButtons[old].Button);
             taskButtons.Remove(old);
         }
-        foreach (TaskWindow task in windows)
+        foreach (TaskbarEntry entry in entries)
         {
-            if (!taskButtons.TryGetValue(task.Handle, out TaskButton? current) || current.Task.Process != task.Process)
+            if (!taskButtons.TryGetValue(entry.Key, out TaskButton? current))
             {
-                if (current is not null)
-                    taskPanel.Children.Remove(current.Button);
-                current = CreateTaskButton(task);
-                taskButtons[task.Handle] = current;
+                current = CreateTaskButton(entry);
+                taskButtons[entry.Key] = current;
                 taskPanel.Children.Add(current.Button);
             }
-            current.Task = task;
-            if (current.Title.Text != task.Title)
+            current.Entry = entry;
+            current.Icon.Source = entry.Windows[0].Icon;
+            current.Icon.Visibility = current.Icon.Source is null ? Visibility.Collapsed : Visibility.Visible;
+            current.FallbackIcon.Visibility = current.Icon.Source is null ? Visibility.Visible : Visibility.Collapsed;
+            current.Arrow.Visibility = entry.IsGroup ? Visibility.Visible : Visibility.Collapsed;
+            string label = entry.IsGroup ? $"{entry.Label} ({entry.Windows.Length})" : entry.Label;
+            if (current.Title.Text != label)
             {
-                current.Title.Text = task.Title;
-                current.Button.ToolTip = task.Title;
-                AutomationProperties.SetName(current.Button, task.Title);
+                current.Title.Text = label;
+                current.Button.ToolTip = label;
+                AutomationProperties.SetName(current.Button, label);
             }
-            current.Button.Background = task.Handle == active ? visuals.ActiveTask : visuals.Task;
-            current.Button.Style = task.Handle == active ? visuals.ActiveTaskButtonStyle : visuals.TaskButtonStyle;
+            bool isActive = entry.Windows.Any(task => task.Handle == active);
+            current.Button.Background = isActive ? visuals.ActiveTask : visuals.Task;
+            current.Button.Style = isActive ? visuals.ActiveTaskButtonStyle : visuals.TaskButtonStyle;
         }
         ResizeTaskButtons();
     }
 
-    private TaskButton CreateTaskButton(TaskWindow task)
+    private TaskButton CreateTaskButton(TaskbarEntry entry)
     {
         var content = new DockPanel { LastChildFill = true };
-        UIElement icon = task.Icon is not null
-            ? new Image { Source = task.Icon, Width = 16, Height = 16 }
-            : LunaVisuals.ShortcutGlyph("M 1,2 L 19,2 19,17 1,17 Z M 3,6 L 3,15 17,15 17,6 Z",
-                visuals.HighContrast ? SystemColors.ControlTextBrush : Brushes.White);
-        var iconCell = new Border { Width = 17, Margin = new Thickness(0, 0, 5, 0), Child = icon };
+        var icon = new Image { Width = 16, Height = 16 };
+        UIElement fallback = LunaVisuals.ShortcutGlyph("M 1,2 L 19,2 19,17 1,17 Z M 3,6 L 3,15 17,15 17,6 Z",
+            visuals.HighContrast ? SystemColors.ControlTextBrush : visuals.BarText);
+        var glyph = new Grid();
+        glyph.Children.Add(icon);
+        glyph.Children.Add(fallback);
+        var iconCell = new Border { Width = 17, Margin = new Thickness(0, 0, 5, 0), Child = glyph };
         content.Children.Add(iconCell);
+        var arrow = new TextBlock { Text = "▾", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(3, 0, 0, 0) };
+        DockPanel.SetDock(arrow, Dock.Right);
+        content.Children.Add(arrow);
         var title = new TextBlock
         {
             TextTrimming = TextTrimming.CharacterEllipsis,
@@ -479,19 +605,27 @@ public sealed class LunaShell : IDisposable
         };
         content.Children.Add(title);
 
-        Button button = visuals.NewButton(task.Title, content, visuals.TaskButtonStyle, visuals.Task, visuals.TaskEdge);
+        Button button = visuals.NewButton(entry.Label, content, visuals.TaskButtonStyle, visuals.Task, visuals.TaskEdge);
         button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
         button.Width = MaximumTaskWidth;
         button.Height = 29;
         button.Margin = new Thickness(0, 0, 2, 0);
-        var item = new TaskButton(button, title, task);
+        var item = new TaskButton(button, title, arrow, icon, fallback, entry);
+        ContextMenu actions = CreateContextMenu();
+        button.ContextMenu = actions;
+        button.ContextMenuOpening += (_, _) => FillTaskMenu(actions, item.Entry, includeActions: true);
         button.Click += (_, _) =>
         {
-            if (tasks?.SwitchTo(item.Task) == false)
+            if (item.Entry.IsGroup)
             {
-                System.Media.SystemSounds.Beep.Play();
-                tasks.Refresh();
+                ContextMenu choices = CreateContextMenu();
+                choices.PlacementTarget = button;
+                choices.Placement = System.Windows.Controls.Primitives.PlacementMode.Top;
+                FillTaskMenu(choices, item.Entry, includeActions: false);
+                choices.IsOpen = true;
             }
+            else if (tasks is not null)
+                CompleteWindowAction(tasks.SwitchTo(item.Entry.Windows[0]));
         };
         return item;
     }
@@ -544,7 +678,7 @@ public sealed class LunaShell : IDisposable
             double scale = DpiScale(source.Handle);
             double width = Math.Min(397, monitor.Area.Width / scale);
             double height = Math.Clamp((area.Top - monitor.Area.Top) / scale, 1, 335);
-            var opened = new StartMenu(bar, visuals, openControl, showWindowsTaskbar)
+            var opened = new StartMenu(bar, visuals, openControl, showWindowsTaskbar, openXpExplorer, options.UseXpExplorer)
             {
                 Width = width,
                 Height = height,
@@ -566,6 +700,8 @@ public sealed class LunaShell : IDisposable
         StartMenu? opened = menu;
         menu = null;
         opened?.Dismiss();
+        if (openContextMenu is { } context)
+            context.IsOpen = false;
     }
 
     private void RefreshPalette()
@@ -573,7 +709,7 @@ public sealed class LunaShell : IDisposable
         if (disposed || bar is null || visuals.HighContrast == SystemParameters.HighContrast)
             return;
         CloseMenu();
-        visuals = new LunaVisuals();
+        visuals = new LunaVisuals(variant);
         BuildBar();
         tasks?.Refresh();
         UpdateClock();
@@ -597,7 +733,9 @@ public sealed class LunaShell : IDisposable
     private void OnBarSizeChanged(object sender, SizeChangedEventArgs args)
     {
         if (quickLaunch is not null)
-            quickLaunch.Visibility = args.NewSize.Width < 450 ? Visibility.Collapsed : Visibility.Visible;
+            quickLaunch.Visibility = args.NewSize.Width < 450 || quickLaunch.Children.Count == 0
+                ? Visibility.Collapsed
+                : Visibility.Visible;
         ResizeTaskButtons();
     }
 
@@ -642,10 +780,14 @@ public sealed class LunaShell : IDisposable
         taskButtons.Clear();
     }
 
-    private sealed class TaskButton(Button button, TextBlock title, TaskWindow task)
+    private sealed class TaskButton(Button button, TextBlock title, TextBlock arrow, Image icon,
+        UIElement fallbackIcon, TaskbarEntry entry)
     {
         internal Button Button { get; } = button;
         internal TextBlock Title { get; } = title;
-        internal TaskWindow Task { get; set; } = task;
+        internal TextBlock Arrow { get; } = arrow;
+        internal Image Icon { get; } = icon;
+        internal UIElement FallbackIcon { get; } = fallbackIcon;
+        internal TaskbarEntry Entry { get; set; } = entry;
     }
 }
