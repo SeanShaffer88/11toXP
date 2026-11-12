@@ -34,6 +34,7 @@ public sealed class LunaShell : IDisposable
     private readonly string? displayId;
     private readonly Action<TaskbarButtonSize>? requestResize;
     private readonly Action<string?>? openXpExplorer;
+    private readonly bool showTrayThumbnail;
     private readonly DispatcherTimer clockTimer;
     private readonly uint callbackMessage;
     private readonly uint taskbarCreatedMessage;
@@ -70,7 +71,8 @@ public sealed class LunaShell : IDisposable
 
     internal LunaShell(Action openControl, Action? showWindowsTaskbar, LunaVariant variant,
         TaskbarOptions options, Action<string?>? openXpExplorer, Action? toggleTrayReveal = null,
-        Func<bool>? isTrayRevealed = null, string? displayId = null, Action<TaskbarButtonSize>? requestResize = null)
+        Func<bool>? isTrayRevealed = null, string? displayId = null, Action<TaskbarButtonSize>? requestResize = null,
+        bool showTrayThumbnail = false)
     {
         this.openControl = openControl ?? throw new ArgumentNullException(nameof(openControl));
         this.showWindowsTaskbar = showWindowsTaskbar;
@@ -81,6 +83,7 @@ public sealed class LunaShell : IDisposable
         this.openXpExplorer = openXpExplorer;
         this.displayId = displayId;
         this.requestResize = requestResize;
+        this.showTrayThumbnail = showTrayThumbnail;
         visuals = new LunaVisuals(variant);
         callbackMessage = ShellNative.RegisterWindowMessageW("11toXP.AppBar.7A7229A8");
         taskbarCreatedMessage = ShellNative.RegisterWindowMessageW("TaskbarCreated");
@@ -492,7 +495,7 @@ public sealed class LunaShell : IDisposable
             layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(ResizeGripHeight) });
         layout.RowDefinitions.Add(new RowDefinition());
         foreach (GridLength width in new[] { GridLength.Auto, GridLength.Auto, new GridLength(1, GridUnitType.Star),
-                                            GridLength.Auto, GridLength.Auto, GridLength.Auto })
+                                            GridLength.Auto, GridLength.Auto, GridLength.Auto, GridLength.Auto })
             layout.ColumnDefinitions.Add(new ColumnDefinition { Width = width });
 
         var startLabel = new StackPanel { Orientation = Orientation.Horizontal };
@@ -561,11 +564,14 @@ public sealed class LunaShell : IDisposable
             AddColumn(layout, trayRevealButton, 4);
         }
 
+        if (showTrayThumbnail)
+            AddColumn(layout, new TrayThumbnail(bar), 5);
+
         clock = visuals.NewButton("Date and Time", "", visuals.TaskButtonStyle, visuals.Tray);
         clock.MinWidth = 88;
         clock.Margin = new Thickness(2, 0, 0, 0);
         clock.Click += (_, _) => RunFromBar(() => StartMenu.LaunchFile("ms-settings:dateandtime"));
-        AddColumn(layout, clock, 5);
+        AddColumn(layout, clock, 6);
 
         if (CanResize)
             AddResizeGrip(layout);

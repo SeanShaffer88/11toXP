@@ -391,12 +391,12 @@ internal static class ThemeChecks
                 Require(journal.HasPreviewTrayRollback(), "The preview records rollback before revealing the tray.");
         };
         app.BeginTaskbarPreview(candidate);
-        Require(!platform.AutoHide && platform.Shell && journal.HasPreviewTrayRollback() &&
+        Require(!platform.AutoHide && platform.Shell && platform.TrayThumbnailShown && journal.HasPreviewTrayRollback() &&
             journal.Load() is { OriginalAutoHide: false, Preferences.KeepWindowsTrayVisible: false },
             "Preview reveals the native tray and retains the committed XP-only state.");
 
         app.CancelTaskbarPreview();
-        Require(platform.AutoHide && platform.Shell && !journal.HasPreviewTrayRollback() &&
+        Require(platform.AutoHide && platform.Shell && !platform.TrayThumbnailShown && !journal.HasPreviewTrayRollback() &&
             journal.Load()?.Preferences.KeepWindowsTrayVisible == false,
             "Undo and timeout restore the previous native tray state and layout.");
 
@@ -415,7 +415,7 @@ internal static class ThemeChecks
         platform.SetAutoHide(true);
         int writes = platform.AutoHideWrites;
         app.BeginTaskbarPreview(candidate);
-        Require(platform.AutoHide && !journal.HasPreviewTrayRollback() && platform.AutoHideWrites == writes,
+        Require(platform.AutoHide && !platform.TrayThumbnailShown && !journal.HasPreviewTrayRollback() && platform.AutoHideWrites == writes,
             "Preview does not change the global tray setting with multiple connected displays.");
         app.CancelTaskbarPreview();
         app.Restore();
@@ -891,6 +891,7 @@ internal static class ThemeChecks
         public bool AutoHide { get; private set; }
         public bool Shell { get; private set; }
         public bool TrayRevealAllowed { get; private set; }
+        public bool TrayThumbnailShown { get; private set; }
         public TaskbarOptions? Options { get; private set; }
         public LunaVariant? FailingShellVariant { get; set; }
         public int ConnectedDisplays { get; set; } = 1;
@@ -996,13 +997,14 @@ internal static class ThemeChecks
         public TaskbarAvailability InspectTaskbar(TaskbarOptions options) =>
             new(HasMatchingDisplay, HasMatchingDisplay && ConnectedDisplays == 1);
 
-        public void StartShell(LunaVariant variant, TaskbarOptions options, bool allowTrayReveal)
+        public void StartShell(LunaVariant variant, TaskbarOptions options, bool allowTrayReveal, bool showTrayThumbnail = false)
         {
             ShellCalls++;
             if (FailingShellVariant == variant)
                 throw new InvalidOperationException("Injected shell start failure.");
             Shell = HasMatchingDisplay;
             TrayRevealAllowed = Shell && allowTrayReveal;
+            TrayThumbnailShown = Shell && showTrayThumbnail;
             Variant = variant;
             Options = options;
         }
@@ -1010,6 +1012,7 @@ internal static class ThemeChecks
         {
             Shell = false;
             TrayRevealAllowed = false;
+            TrayThumbnailShown = false;
         }
     }
 }
