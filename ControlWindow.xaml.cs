@@ -4,6 +4,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Automation.Peers;
 using Microsoft.Win32;
+using LunaDesktop.Diagnostics;
 using LunaDesktop.State;
 using LunaDesktop.Appearance;
 using LunaDesktop.Shell;
@@ -17,13 +18,13 @@ public partial class ControlWindow : Window
     private string? image;
     private bool previewApplied;
     private string? message;
-    private readonly ObservableCollection<Shortcut> launchItems = [];
+    private readonly ObservableCollection<QuickLaunchEntry> launchItems = [];
     private readonly Dictionary<string, object> normalBrushes = [];
-    private static readonly Shortcut[] ShortcutChoices =
+    private static readonly QuickLaunchEntry[] ShortcutChoices =
     [
-        new(QuickLaunchItem.FileExplorer, "File Explorer"),
-        new(QuickLaunchItem.Settings, "Windows Settings"),
-        new(QuickLaunchItem.XpExplorer, "XP Explorer")
+        new(QuickLaunchItem.FileExplorer, null),
+        new(QuickLaunchItem.Settings, null),
+        new(QuickLaunchItem.XpExplorer, null)
     ];
 
     internal ControlWindow(App app, bool preview)
@@ -38,7 +39,7 @@ public partial class ControlWindow : Window
         })
             normalBrushes.Add(key, Resources[key]);
         LaunchList.ItemsSource = launchItems;
-        LoadPreferences(app.Coordinator?.State?.Preferences ?? ThemePreferences.Default);
+        LoadPreferences(app.Coordinator?.State?.Preferences ?? (preview ? ThemePreferences.Default : app.SavedPreferences));
         ApplyHighContrast();
         SystemParameters.StaticPropertyChanged += SystemParametersChanged;
         Activated += (_, _) => RefreshTaskbarFocus();
@@ -75,12 +76,17 @@ public partial class ControlWindow : Window
             : active ? "The XP appearance is active."
             : state is not null ? "Restore previous settings before applying again."
             : "Apply the XP appearance to this Windows account.");
+        AnnounceStatus(status);
+        UpdateWallpaperText();
+    }
+
+    private void AnnounceStatus(string status)
+    {
         if (StatusMessage.Text != status)
         {
             StatusMessage.Text = status;
             UIElementAutomationPeer.CreatePeerForElement(StatusMessage)?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
         }
-        UpdateWallpaperText();
     }
 
     internal bool PerformOperation(Action operation, string success)
@@ -151,8 +157,16 @@ public partial class ControlWindow : Window
         if (UseSounds.IsChecked == true)
             appearance |= AppearanceComponents.Sounds;
         var grouping = GroupingChoice.SelectedIndex == 1 ? TaskGrouping.Always : TaskGrouping.Never;
-        return new ThemePreferences(SelectedVariant, UseXpTaskbar.IsChecked == true, appearance,
-            new TaskbarOptions(grouping, launchItems.Select(item => item.Id).ToArray(), UseXpExplorer.IsChecked == true));
+        var builtIns = launchItems.Select(item => item.BuiltIn).OfType<QuickLaunchItem>().ToArray();
+        var taskbar = new TaskbarOptions(grouping, builtIns, UseXpExplorer.IsChecked == true)
+        {
+            OrderedQuickLaunch = launchItems.Count == builtIns.Length ? null : [.. launchItems]
+        };
+        return new ThemePreferences(SelectedVariant, UseXpTaskbar.IsChecked == true, appearance, taskbar)
+        {
+            StartWithWindows = StartWithWindows.IsChecked == true,
+            KeepWindowsTrayVisible = KeepWindowsTrayVisible.IsChecked == true
+        };
     }
 
     private void LoadPreferences(ThemePreferences preferences)
@@ -168,9 +182,11 @@ public partial class ControlWindow : Window
         UseCursors.IsChecked = preferences.Appearance.HasFlag(AppearanceComponents.Cursors);
         UseSounds.IsChecked = preferences.Appearance.HasFlag(AppearanceComponents.Sounds);
         UseXpExplorer.IsChecked = preferences.Taskbar.UseXpExplorer;
+        StartWithWindows.IsChecked = preferences.StartWithWindows;
+        KeepWindowsTrayVisible.IsChecked = preferences.KeepWindowsTrayVisible;
         GroupingChoice.SelectedIndex = preferences.Taskbar.Grouping == TaskGrouping.Always ? 1 : 0;
-        foreach (var id in preferences.Taskbar.QuickLaunch)
-            launchItems.Add(ShortcutChoices.Single(item => item.Id == id));
+        foreach (var shortcut in preferences.Taskbar.EffectiveQuickLaunch)
+            launchItems.Add(shortcut);
         LaunchList.SelectedIndex = launchItems.Count > 0 ? 0 : -1;
         UpdateQuickLaunchControls();
     }
@@ -183,6 +199,20 @@ public partial class ControlWindow : Window
 
     private void OpenXpExplorerClick(object sender, RoutedEventArgs e) =>
         PerformOperation(() => app.OpenXpExplorer(SelectedVariant), "XP Explorer opened.");
+
+    private void ExportDiagnosticsClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (DiagnosticReport.Export(this, app.Coordinator, app.StartupError is not null))
+                AnnounceStatus("Diagnostics exported.");
+        }
+        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or
+                                      InvalidOperationException or Win32Exception)
+        {
+            AnnounceStatus("Diagnostics could not be saved. Choose another location and try again.");
+        }
+    }
 
     private void RefreshTaskbarFocus() =>
         FocusTaskbarAction.IsEnabled = !preview && app.CanFocusXpTaskbar;
@@ -200,11 +230,47 @@ public partial class ControlWindow : Window
 
     private void QuickLaunchAddClick(object sender, RoutedEventArgs e)
     {
-        if (AvailableShortcuts.SelectedItem is not Shortcut shortcut || launchItems.Contains(shortcut))
+        if (AvailableShortcuts.SelectedItem is not QuickLaunchEntry shortcut)
             return;
+        AddQuickLaunchItem(shortcut);
+    }
+
+    private void QuickLaunchAddFileClick(object sender, RoutedEventArgs e)
+    {
+        if (launchItems.Count >= TaskbarOptions.MaximumQuickLaunchItems)
+            return;
+        var dialog = new OpenFileDialog
+        {
+            Title = "Add Quick Launch Shortcut",
+            Filter = "Windows shortcuts (*.lnk)|*.lnk",
+            DereferenceLinks = false,
+            CheckFileExists = true
+        };
+        try
+        {
+            if (dialog.ShowDialog(this) == true)
+                AddQuickLaunchItem(QuickLaunchEntry.FromFile(dialog.FileName));
+        }
+        catch (Exception error) when (error is IOException or InvalidOperationException or UnauthorizedAccessException or Win32Exception)
+        {
+            AnnounceStatus(error.Message);
+        }
+    }
+
+    private void AddQuickLaunchItem(QuickLaunchEntry shortcut)
+    {
+        if (launchItems.Count >= TaskbarOptions.MaximumQuickLaunchItems)
+            return;
+        if (launchItems.Any(item => item.SameAs(shortcut)))
+        {
+            AnnounceStatus("This shortcut is already in Quick Launch.");
+            return;
+        }
         launchItems.Add(shortcut);
         LaunchList.SelectedItem = shortcut;
+        LaunchList.ScrollIntoView(shortcut);
         UpdateQuickLaunchControls();
+        AnnounceStatus("Shortcut added. Use Apply or Repair to save your changes.");
     }
 
     private void QuickLaunchRemoveClick(object sender, RoutedEventArgs e)
@@ -228,6 +294,7 @@ public partial class ControlWindow : Window
             return;
         launchItems.Move(from, to);
         LaunchList.SelectedIndex = to;
+        LaunchList.ScrollIntoView(launchItems[to]);
         UpdateQuickLaunchButtons();
     }
 
@@ -239,7 +306,9 @@ public partial class ControlWindow : Window
         var available = ShortcutChoices.Where(item => !launchItems.Contains(item)).ToArray();
         AvailableShortcuts.ItemsSource = available;
         AvailableShortcuts.SelectedIndex = available.Length > 0 ? 0 : -1;
-        AddShortcut.IsEnabled = AvailableShortcuts.IsEnabled = available.Length > 0;
+        bool hasRoom = launchItems.Count < TaskbarOptions.MaximumQuickLaunchItems;
+        AddShortcutFile.IsEnabled = hasRoom;
+        AddShortcut.IsEnabled = AvailableShortcuts.IsEnabled = hasRoom && available.Length > 0;
         UpdateQuickLaunchButtons();
     }
 
@@ -293,7 +362,7 @@ public partial class ControlWindow : Window
     {
         if (!preview && app.StateDirectory is { } directory)
             WindowPosition.Save(this, directory);
-        if (!preview && app.Coordinator?.State is not null && !Dispatcher.HasShutdownStarted)
+        if (!preview && !app.IsSessionEnding && app.Coordinator?.State is not null && !Dispatcher.HasShutdownStarted)
         {
             e.Cancel = true;
             Hide();
@@ -343,10 +412,5 @@ public partial class ControlWindow : Window
                 Resources["ButtonHover"] = palette.MenuRight;
             }
         }
-    }
-
-    private sealed record Shortcut(QuickLaunchItem Id, string Label)
-    {
-        public override string ToString() => Label;
     }
 }

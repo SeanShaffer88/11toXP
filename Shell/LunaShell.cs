@@ -43,6 +43,7 @@ public sealed class LunaShell : IDisposable
     private StackPanel? taskPanel;
     private ScrollViewer? taskScroller;
     private StackPanel? quickLaunch;
+    private int inlineQuickLaunchLimit;
     private Button? overflow;
     private Button? clock;
     private Button? start;
@@ -66,8 +67,7 @@ public sealed class LunaShell : IDisposable
         this.openControl = openControl ?? throw new ArgumentNullException(nameof(openControl));
         this.showWindowsTaskbar = showWindowsTaskbar;
         this.variant = variant;
-        options.Validate();
-        this.options = options with { QuickLaunch = [.. options.QuickLaunch] };
+        this.options = options.CheckedCopy();
         this.openXpExplorer = openXpExplorer;
         visuals = new LunaVisuals(variant);
         callbackMessage = ShellNative.RegisterWindowMessageW("11toXP.AppBar.7A7229A8");
@@ -397,10 +397,8 @@ public sealed class LunaShell : IDisposable
         AddColumn(layout, start, 0);
 
         quickLaunch = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(6, 2, 4, 2) };
-        foreach (QuickLaunchItem shortcut in options.QuickLaunch)
-            AddQuickLaunch(shortcut);
-        if (quickLaunch.Children.Count == 0)
-            quickLaunch.Visibility = Visibility.Collapsed;
+        inlineQuickLaunchLimit = -1;
+        UpdateQuickLaunch(bar.ActualWidth);
         AddColumn(layout, quickLaunch, 1);
 
         taskPanel = new StackPanel { Orientation = Orientation.Horizontal };
@@ -450,34 +448,69 @@ public sealed class LunaShell : IDisposable
         grid.Children.Add(child);
     }
 
-    private void AddQuickLaunch(QuickLaunchItem item)
+    private void UpdateQuickLaunch(double width)
     {
-        switch (item)
+        int inlineLimit = width >= 450 ? 3 : 0;
+        if (quickLaunch is null || inlineLimit == inlineQuickLaunchLimit)
+            return;
+
+        inlineQuickLaunchLimit = inlineLimit;
+        var commands = options.EffectiveQuickLaunch
+            .Where(entry => entry.BuiltIn != QuickLaunchItem.XpExplorer || openXpExplorer is not null)
+            .Select(QuickLaunchCommand).ToArray();
+        quickLaunch.Children.Clear();
+        quickLaunch.Visibility = commands.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+        foreach (var (label, geometry, color, action) in commands.Take(inlineLimit))
+            quickLaunch.Children.Add(CreateQuickLaunchButton(label, geometry, color, () => RunFromBar(action)));
+        if (commands.Length <= inlineLimit)
+            return;
+
+        var context = CreateContextMenu();
+        AutomationProperties.SetName(context, "Quick Launch");
+        foreach (var command in commands.Skip(inlineLimit))
         {
-            case QuickLaunchItem.FileExplorer:
-                AddQuickLaunch("Windows File Explorer", "M 1,5 L 8,5 10,8 19,8 19,19 1,19 Z", 0xFFD46D,
-                    () => StartMenu.LaunchExplorer());
-                break;
-            case QuickLaunchItem.Settings:
-                AddQuickLaunch("Windows Settings", "M 2,3 L 18,3 18,19 2,19 Z M 6,7 L 6,15 9,15 9,7 Z M 12,7 L 12,15 15,15 15,7 Z",
-                    0x9FD6F1, () => StartMenu.LaunchFile("ms-settings:"));
-                break;
-            case QuickLaunchItem.XpExplorer when openXpExplorer is not null:
-                AddQuickLaunch("XP Explorer", "M 1,5 L 8,5 10,8 19,8 19,19 1,19 Z M 4,11 L 16,11 16,15 4,15 Z",
-                    0xF4BD68, () => openXpExplorer(null));
-                break;
+            var item = MenuCommand(command.Label.Replace("_", "__", StringComparison.Ordinal),
+                () => RunFromBar(command.Action));
+            AutomationProperties.SetName(item, command.Label);
+            context.Items.Add(item);
         }
+        Button more = CreateQuickLaunchButton("More Quick Launch",
+            "M 2,4 L 7,10 2,16 5,16 10,10 5,4 Z M 11,4 L 16,10 11,16 14,16 19,10 14,4 Z",
+            0xE8F4FF, () => context.IsOpen = true);
+        context.PlacementTarget = more;
+        context.Placement = System.Windows.Controls.Primitives.PlacementMode.Top;
+        quickLaunch.Children.Add(more);
     }
 
-    private void AddQuickLaunch(string label, string geometry, uint color, Action action)
+    private (string Label, string Geometry, uint Color, Action Action) QuickLaunchCommand(QuickLaunchEntry entry) =>
+        entry.BuiltIn switch
+        {
+            QuickLaunchItem.FileExplorer => ("Windows File Explorer", "M 1,5 L 8,5 10,8 19,8 19,19 1,19 Z",
+                0xFFD46D, () => StartMenu.LaunchExplorer()),
+            QuickLaunchItem.Settings => (entry.Label,
+                "M 2,3 L 18,3 18,19 2,19 Z M 6,7 L 6,15 9,15 9,7 Z M 12,7 L 12,15 15,15 15,7 Z",
+                0x9FD6F1, () => StartMenu.LaunchFile("ms-settings:")),
+            QuickLaunchItem.XpExplorer => (entry.Label,
+                "M 1,5 L 8,5 10,8 19,8 19,19 1,19 Z M 4,11 L 16,11 16,15 4,15 Z",
+                0xF4BD68, () => openXpExplorer!(null)),
+            _ => (entry.Label, "M 3,1 L 13,1 17,5 17,19 3,19 Z M 6,13 L 11,8 11,12 14,12 14,6 8,6 8,9 4,13 Z",
+                0xE8F4FF, () =>
+                {
+                    string path = entry.ShortcutPath!;
+                    QuickLaunchEntry.RequireAvailableFile(path);
+                    StartMenu.LaunchFile(path);
+                })
+        };
+
+    private Button CreateQuickLaunchButton(string label, string geometry, uint color, Action click)
     {
         Brush fill = visuals.HighContrast ? SystemColors.ControlTextBrush : LunaVisuals.Solid(color);
         Button button = visuals.NewButton(label, LunaVisuals.ShortcutGlyph(geometry, fill, visuals.TaskEdge),
             visuals.TaskButtonStyle, Brushes.Transparent);
         button.ToolTip = label;
         button.Width = 31;
-        button.Click += (_, _) => RunFromBar(action);
-        quickLaunch!.Children.Add(button);
+        button.Click += (_, _) => click();
+        return button;
     }
 
     private ContextMenu CreateBarContextMenu()
@@ -755,10 +788,8 @@ public sealed class LunaShell : IDisposable
 
     private void OnBarSizeChanged(object sender, SizeChangedEventArgs args)
     {
-        if (quickLaunch is not null)
-            quickLaunch.Visibility = args.NewSize.Width < 450 || quickLaunch.Children.Count == 0
-                ? Visibility.Collapsed
-                : Visibility.Visible;
+        if (args.WidthChanged)
+            UpdateQuickLaunch(args.NewSize.Width);
         ResizeTaskButtons();
     }
 

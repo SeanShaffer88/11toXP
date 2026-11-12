@@ -15,7 +15,7 @@ internal static class StateFiles
             throw new InvalidDataException("11toXP state contains a redirected path or an unexpected file type.");
     }
 
-    public static void WriteAtomically(string directory, string path, Action<Stream> write)
+    public static void WriteAtomically(string directory, string path, Action<Stream> write, bool overwrite = true)
     {
         Guard(directory, directory: true);
         Directory.CreateDirectory(directory);
@@ -31,7 +31,7 @@ internal static class StateFiles
             }
             Guard(directory, directory: true);
             Guard(path, directory: false);
-            File.Move(staging, path, overwrite: true);
+            File.Move(staging, path, overwrite);
         }
         finally
         {

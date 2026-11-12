@@ -18,6 +18,8 @@ public partial class App : Application
     private ExplorerWindow? explorer;
     private string? startupError;
     private string? directory;
+    private ThemePreferenceStore? preferencesStore;
+    private bool sessionEnding;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -76,9 +78,10 @@ public partial class App : Application
             showRegistration = ThreadPool.RegisterWaitForSingleObject(
                 showRequest, (_, _) => Dispatcher.BeginInvoke(ShowControl), null, Timeout.Infinite, executeOnlyOnce: false);
             directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "11toXP");
+            preferencesStore = new ThemePreferenceStore(directory);
             var platform = new ThemePlatform(directory, ShowControl, ShowWindowsTaskbar, ExplorerRestarted, ShellFaulted,
                 path => OpenXpExplorer(coordinator?.State?.Preferences.Variant ?? LunaVariant.Blue, path));
-            coordinator = new ThemeCoordinator(new ThemeJournal(directory), platform);
+            coordinator = new ThemeCoordinator(new ThemeJournal(directory), platform, preferencesStore);
             coordinator.Load();
             themePlatform = platform;
         }
@@ -108,7 +111,7 @@ public partial class App : Application
             }
             return;
         }
-        if (coordinator.State is { Phase: ThemePhase.Active })
+        if (coordinator.State is { Phase: ThemePhase.Active } or { Preferences.StartWithWindows: false })
         {
             try { coordinator.Resume(); }
             catch (Exception error) { startupError = error.Message; }
@@ -122,12 +125,16 @@ public partial class App : Application
     internal ThemeCoordinator? Coordinator => coordinator;
     internal string? StartupError => startupError;
     internal string? StateDirectory => directory;
+    internal bool IsSessionEnding => sessionEnding;
+    internal ThemePreferences SavedPreferences => preferencesStore?.Load() ?? ThemePreferences.Default;
     internal bool CanFocusXpTaskbar => themePlatform?.CanFocusXpTaskbar == true;
     internal bool TryFocusXpTaskbar() => themePlatform?.TryFocusXpTaskbar() == true;
     internal void ClearStartupError() => startupError = null;
 
     internal void OpenXpExplorer(LunaVariant variant, string? path = null)
     {
+        if (sessionEnding)
+            return;
         if (explorer is null)
         {
             explorer = new ExplorerWindow(variant, directory);
@@ -150,6 +157,8 @@ public partial class App : Application
 
     internal void CloseControl(bool preview)
     {
+        if (sessionEnding)
+            return;
         if (preview || coordinator?.State is null)
         {
             Shutdown();
@@ -160,7 +169,7 @@ public partial class App : Application
 
     private void ShowControl()
     {
-        if (Dispatcher.HasShutdownStarted)
+        if (sessionEnding || Dispatcher.HasShutdownStarted)
             return;
         control ??= new ControlWindow(this, preview: false);
         control.Show();
@@ -171,12 +180,16 @@ public partial class App : Application
 
     private void ShowWindowsTaskbar()
     {
+        if (sessionEnding)
+            return;
         ShowControl();
         control?.PerformOperation(() => coordinator?.ShowWindowsTaskbar(), "Windows taskbar shown. Repair resumes the XP taskbar.");
     }
 
     private void ExplorerRestarted()
     {
+        if (sessionEnding)
+            return;
         try
         {
             coordinator?.ExplorerRestarted();
@@ -187,16 +200,37 @@ public partial class App : Application
 
     private void ShellFaulted(Exception fault)
     {
+        if (sessionEnding)
+            return;
         startupError = fault.Message;
-        try { coordinator?.RecoverShellFault(); }
+        try { coordinator?.RecoverShellFault(fault); }
         catch (Exception error) { startupError += " " + error.Message; }
         ShowControl();
         control?.RefreshStatus();
     }
 
+    protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
+    {
+        base.OnSessionEnding(e);
+        sessionEnding = !e.Cancel;
+    }
+
     protected override void OnExit(ExitEventArgs e)
     {
-        try { coordinator?.StopShell(); }
+        try
+        {
+            if (sessionEnding && coordinator?.State is { Preferences.StartWithWindows: false })
+            {
+                try { coordinator.Restore(); }
+                catch { /* The journal retains pending work for the next launch. */ }
+                try { coordinator.StopShell(); }
+                catch { /* Allow Windows to finish ending the session. */ }
+            }
+            else
+            {
+                coordinator?.StopShell();
+            }
+        }
         finally
         {
             showRegistration?.Unregister(null);

@@ -1,5 +1,9 @@
 using System.IO;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using LunaDesktop.Appearance;
+using LunaDesktop.Diagnostics;
 using LunaDesktop.Shell;
 
 namespace LunaDesktop.State;
@@ -7,6 +11,7 @@ namespace LunaDesktop.State;
 internal static class ThemeChecks
 {
     private const string Image = @"C:\Selected.jpg";
+    private static ThemePreferences XpTaskbarOnly => ThemePreferences.Default with { KeepWindowsTrayVisible = false };
 
     public static int Run()
     {
@@ -18,12 +23,21 @@ internal static class ThemeChecks
             WithSession(InterruptedRestore);
             WithSession(BuildChanged);
             WithSession(AlreadyAutoHides);
+            WithSession(WindowsTrayDefault);
+            WithSession(WindowsTrayModeChanges);
+            WithSession(WindowsTrayUnavailable);
             WithSession(MovedExecutable);
             WithSession(SignInCollision);
+            WithSession(SessionOnlyLifecycle);
+            WithSession(InterruptedStartupRegistration);
+            WithSession(InterruptedStartupRemoval);
+            WithSession(DiagnosticPrivacy);
+            DiagnosticPreservesFiles();
             WithSession(ComponentLifecycle);
             WithSession(InterruptedComponentChange);
             WithSession(InterruptedWallpaperOptOut);
             LegacyJournal();
+            SavedPreferences();
             return 0;
         }
         catch (Exception error)
@@ -37,7 +51,7 @@ internal static class ThemeChecks
     {
         app.Resume();
         Require(platform.ShellCalls == 0, "Sign-in cannot enable an unapplied theme.");
-        app.Apply(null);
+        app.Apply(null, XpTaskbarOnly);
         Require(platform.ShellWasStartedBeforeAutoHide, "Start the custom taskbar before hiding the stock taskbar.");
         app.Repair(null);
         app.ShowWindowsTaskbar();
@@ -93,7 +107,7 @@ internal static class ThemeChecks
 
     private static void BuildChanged(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
     {
-        app.Apply(null);
+        app.Apply(null, XpTaskbarOnly);
         platform.Build++;
         app.Resume();
         Require(platform.Shell && !platform.AutoHide, "Keep stock taskbar visible on an unverified build.");
@@ -119,7 +133,7 @@ internal static class ThemeChecks
     private static void AlreadyAutoHides(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
     {
         platform.SetAutoHide(true);
-        app.Apply(null);
+        app.Apply(null, XpTaskbarOnly);
         Require(journal.Load()?.OriginalAutoHide is null, "An already enabled auto-hide preference is not owned.");
         platform.SetAutoHide(false);
         app.Resume();
@@ -128,11 +142,208 @@ internal static class ThemeChecks
         Require(!platform.AutoHide, "Restore preserves a user's subsequent auto-hide change.");
     }
 
+    private static void WindowsTrayDefault(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
+    {
+        app.Apply(null);
+        Require(platform.Shell && !platform.AutoHide && platform.AutoHideWrites == 0 &&
+            journal.Load() is { Preferences.KeepWindowsTrayVisible: true, OriginalAutoHide: null },
+            "The default keeps an already visible Windows taskbar untouched.");
+        app.Restore();
+
+        platform.SetAutoHide(true);
+        platform.BeforeSetAutoHide = enabled =>
+        {
+            if (!enabled)
+                Require(journal.Load()?.OriginalAutoHide == true, "Persist the original auto-hide setting before exposing the tray.");
+        };
+        app.Apply(null);
+        Require(platform.Shell && !platform.AutoHide && journal.Load()?.OriginalAutoHide == true,
+            "The default exposes the Windows tray even when auto-hide was previously enabled.");
+        app.ShowWindowsTaskbar();
+        Require(!platform.Shell && platform.AutoHide && journal.Load()?.OriginalAutoHide is null,
+            "Pausing the XP taskbar restores the previous native auto-hide setting.");
+        app.Repair(null);
+        app.RecoverShellFault(new InvalidOperationException("Injected shell fault."));
+        Require(!platform.Shell && platform.AutoHide && journal.Load()?.OriginalAutoHide is null,
+            "Recovering a shell fault restores the previous native auto-hide setting.");
+        app.Repair(null);
+        app.Restore();
+        Require(!platform.Shell && platform.AutoHide && journal.Load() is null,
+            "Restoring an active tray-visible profile returns to the previously auto-hidden taskbar.");
+    }
+
+    private static void WindowsTrayModeChanges(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
+    {
+        app.Apply(null, XpTaskbarOnly);
+        Require(platform.AutoHide && journal.Load()?.OriginalAutoHide == false, "XP-only mode owns the change.");
+        app.Repair(null, ThemePreferences.Default);
+        Require(!platform.AutoHide && journal.Load()?.OriginalAutoHide is null,
+            "Switching to the visible tray returns to the original visible setting and releases ownership.");
+        app.Restore();
+
+        platform.SetAutoHide(true);
+        app.Apply(null);
+        app.Repair(null, XpTaskbarOnly);
+        Require(platform.AutoHide && journal.Load()?.OriginalAutoHide is null,
+            "Switching to XP-only returns to the original hidden setting and releases ownership.");
+        app.Repair(null, ThemePreferences.Default);
+        Require(!platform.AutoHide && journal.Load()?.OriginalAutoHide == true,
+            "Switching back to the visible tray records the unchanged original baseline.");
+        app.Restore();
+        Require(platform.AutoHide, "Mode changes preserve the user's original setting.");
+    }
+
+    private static void WindowsTrayUnavailable(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
+    {
+        platform.SetAutoHide(true);
+        platform.FailingAutoHideTarget = false;
+        app.Apply(null);
+        Require(platform.AutoHide && journal.Load()?.OriginalAutoHide == true &&
+            app.CompatibilityStatus.Contains("could not"), "An unverified tray write retains ownership and reports compatibility.");
+        platform.FailingAutoHideTarget = null;
+        app.Repair(null);
+        Require(!platform.AutoHide, "Repair retries keeping the Windows tray visible.");
+        var priorWrites = platform.AutoHideWrites;
+        platform.AutoHideAvailable = false;
+        app.Repair(null);
+        Require(platform.AutoHideWrites == priorWrites && journal.Load()?.OriginalAutoHide == true,
+            "Repair does not write an unknown auto-hide setting or discard its baseline.");
+        ExpectFailure(app.Restore);
+        Require(platform.AutoHideWrites == priorWrites && journal.Load()?.OriginalAutoHide == true,
+            "Restore also leaves unknown auto-hide untouched and retains recovery state.");
+        platform.AutoHideAvailable = true;
+        app.Restore();
+        Require(platform.AutoHide && journal.Load() is null, "Restore retries when the native taskbar is available again.");
+    }
+
     private static void SignInCollision(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
     {
         platform.Registered = "Another command";
         ExpectFailure(() => app.Apply(null));
         Require(platform.Registered == "Another command" && journal.Load() is null, "Preserve an unrelated startup command.");
+    }
+
+    private static void SessionOnlyLifecycle(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
+    {
+        const string unrelated = "Another command";
+        var options = ThemePreferences.Default with { StartWithWindows = false };
+        platform.Registered = unrelated;
+        app.Apply(null, options);
+        Require(platform.StartupCommandReads == 0 && platform.Registered == unrelated &&
+            journal.Load() is { StartupCommand: null, Preferences.StartWithWindows: false },
+            "A session-only Apply leaves startup alone.");
+        ExpectFailure(() => app.Repair(null, options with { StartWithWindows = true }));
+        Require(platform.Registered == unrelated, "Enabling sign-in preserves an unrelated command.");
+        platform.Registered = null;
+        app.Repair(null, options with { StartWithWindows = true });
+        Require(platform.Registered == platform.CurrentCommand && journal.Load()?.StartupCommand == platform.CurrentCommand,
+            "Repair re-enables and records the owned startup command.");
+        app.Repair(null, options);
+        Require(platform.Registered is null &&
+            journal.Load() is { StartupCommand: null, PreviousStartupCommand: null, Preferences.StartWithWindows: false },
+            "Disabling sign-in removes and clears the owned command.");
+        var priorStarts = platform.ShellCalls;
+        var reopened = new ThemeCoordinator(journal, platform);
+        reopened.Load();
+        reopened.Resume();
+        Require(platform.ShellCalls == priorStarts && !platform.Shell && !platform.AutoHide && journal.Load() is null,
+            "A cold launch restores a session-only journal without restarting the shell.");
+    }
+
+    private static void InterruptedStartupRemoval(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
+    {
+        app.Apply(Image);
+        var recorded = journal.Load()!;
+        var previous = "\"C:\\Previous\\11toXP.exe\" --background";
+        recorded.PreviousStartupCommand = previous;
+        journal.Save(recorded);
+        app.Load();
+        platform.StartupRemovalFailure = previous;
+        ExpectFailure(() => app.Repair(Image, ThemePreferences.Default with { StartWithWindows = false }));
+        Require(platform.Registered is null && journal.Load() is
+            { StartupCommand: not null, PreviousStartupCommand: not null, Preferences.StartWithWindows: false },
+            "Interrupted startup removal retains the desired setting and both journaled commands.");
+        var reopened = new ThemeCoordinator(journal, platform);
+        reopened.Load();
+        ExpectFailure(reopened.Resume);
+        Require(journal.Load() is { Phase: ThemePhase.Restoring, PreviousStartupCommand: not null },
+            "Recovery checkpoints partial restoration.");
+        platform.StartupRemovalFailure = null;
+        platform.Registered = "Unrelated replacement";
+        reopened.Resume();
+        Require(platform.Registered == "Unrelated replacement" && platform.Wallpaper == FakePlatform.Original &&
+            journal.Load() is null, "Retry completes recovery and preserves an unrelated startup entry.");
+    }
+
+    private static void InterruptedStartupRegistration(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
+    {
+        var options = ThemePreferences.Default with { StartWithWindows = false };
+        app.Apply(null, options);
+        platform.FailStartupRegistration = true;
+        ExpectFailure(() => app.Repair(null, options with { StartWithWindows = true }));
+        Require(platform.Registered is null && journal.Load() is
+            { StartupCommand: not null, Preferences.StartWithWindows: true },
+            "Re-enabling sign-in records the command and preference before attempting registration.");
+        platform.FailStartupRegistration = false;
+        var reopened = new ThemeCoordinator(journal, platform);
+        reopened.Load();
+        reopened.Resume();
+        Require(platform.Registered == platform.CurrentCommand, "Resume retries recorded startup registration.");
+        reopened.Restore();
+    }
+
+    private static void DiagnosticPrivacy(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
+    {
+        const string privatePath = @"C:\Users\PrivateUser\private-wallpaper.jpg";
+        app.Apply(privatePath, ThemePreferences.Default with { StartWithWindows = false });
+        platform.WallpaperRestoreError = privatePath;
+        ExpectFailure(app.Restore);
+        using var output = new MemoryStream();
+        DiagnosticReport.Write(output, 26100, 1.5, 1.25, app, startupFailed: true);
+        var json = Encoding.UTF8.GetString(output.ToArray());
+        using var report = JsonDocument.Parse(json);
+        var root = report.RootElement;
+        Require(root.EnumerateObject().Select(property => property.Name).SequenceEqual(
+                ["windowsBuild", "displayScaling", "enabledComponents", "lastRecoveryError"]) &&
+            root.GetProperty("windowsBuild").GetInt32() == 26100 &&
+            root.GetProperty("displayScaling").GetProperty("x").GetDouble() == 1.5 &&
+            root.GetProperty("enabledComponents").GetProperty("wallpaper").GetBoolean() &&
+            !root.GetProperty("enabledComponents").GetProperty("startWithWindows").GetBoolean() &&
+            root.GetProperty("lastRecoveryError").GetProperty("component").GetString() == "wallpaper" &&
+            root.GetProperty("lastRecoveryError").GetProperty("kind").GetString() == "operationFailed" &&
+            !json.Contains("PrivateUser") && !json.Contains("private-wallpaper"),
+            "Diagnostics report allowlisted values without copying private wallpaper or exception data.");
+    }
+
+    private static void DiagnosticPreservesFiles()
+    {
+        var directory = Directory.CreateTempSubdirectory("11toXP-diagnostics-");
+        var destination = Path.Combine(directory.FullName, "theme-state.json");
+        var report = Path.Combine(directory.FullName, "diagnostics.json");
+        try
+        {
+            byte[] original = [0, 1, 42, 255];
+            File.WriteAllBytes(destination, original);
+            try
+            {
+                DiagnosticReport.WriteNew(destination, 26100, 1, 1, null, startupFailed: false);
+                throw new InvalidOperationException("An export replaced an existing file.");
+            }
+            catch (IOException) { }
+            Require(File.ReadAllBytes(destination).SequenceEqual(original) && directory.GetFiles().Length == 1,
+                "A diagnostic export preserves the existing destination and cleans its staging file.");
+
+            DiagnosticReport.WriteNew(report, 26100, 1, 1, null, startupFailed: false);
+            using var json = JsonDocument.Parse(File.ReadAllText(report));
+            Require(json.RootElement.GetProperty("windowsBuild").GetInt32() == 26100 && directory.GetFiles().Length == 2,
+                "A diagnostic export commits only the new JSON file.");
+        }
+        finally
+        {
+            File.Delete(destination);
+            File.Delete(report);
+            directory.Delete();
+        }
     }
 
     private static void ComponentLifecycle(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
@@ -146,7 +357,7 @@ internal static class ThemeChecks
 
         var shortcuts = new[] { QuickLaunchItem.XpExplorer, QuickLaunchItem.Settings };
         var selected = new ThemePreferences(LunaVariant.Silver, true, AppearanceComponents.Icons | AppearanceComponents.Sounds,
-            new TaskbarOptions(TaskGrouping.Always, shortcuts, true));
+            new TaskbarOptions(TaskGrouping.Always, shortcuts, true)) { KeepWindowsTrayVisible = false };
         app.Repair(null, selected);
         shortcuts[0] = QuickLaunchItem.FileExplorer;
         Require(platform.AppearanceCaptures.SequenceEqual([AppearanceComponents.Icons, AppearanceComponents.Sounds]) &&
@@ -219,16 +430,74 @@ internal static class ThemeChecks
             var app = new ThemeCoordinator(journal, platform);
             app.Load();
             app.Resume();
-            Require(platform.Variant == LunaVariant.Blue && platform.AppearanceCaptures.Count == 0 &&
+            Require(app.State?.Preferences.StartWithWindows == true && platform.Variant == LunaVariant.Blue &&
+                platform.StartupCommandReads == 0 && platform.AppearanceCaptures.Count == 0 &&
                 platform.AppearanceApplies.SequenceEqual([AppearanceComponents.All]),
                 "Legacy active journals keep their original behavior and backup.");
             app.Restore();
             Require(platform.AppearanceRestores.SequenceEqual([AppearanceComponents.All]) && journal.Load() is null,
                 "Legacy ownership remains restorable.");
+
+            app.Apply(null, XpTaskbarOnly);
+            var path = Path.Combine(directory.FullName, "theme-state.json");
+            var record = JsonNode.Parse(File.ReadAllText(path))!;
+            record["Preferences"]!.AsObject().Remove("StartWithWindows");
+            record["Preferences"]!.AsObject().Remove("KeepWindowsTrayVisible");
+            File.WriteAllText(path, record.ToJsonString());
+            platform.Registered = null;
+            var reopened = new ThemeCoordinator(journal, platform);
+            reopened.Load();
+            reopened.Resume();
+            Require(reopened.State?.Preferences.StartWithWindows == true && platform.Registered == platform.CurrentCommand,
+                "An existing preferences object without the startup setting keeps sign-in enabled.");
+            Require(reopened.State?.Preferences.KeepWindowsTrayVisible == true && !platform.AutoHide &&
+                journal.Load()?.OriginalAutoHide is null,
+                "A legacy profile restores its previously visible Windows taskbar and releases its auto-hide ownership.");
+            reopened.Restore();
         }
         finally
         {
             journal.Clear();
+            directory.Delete();
+        }
+    }
+
+    private static void SavedPreferences()
+    {
+        var directory = Directory.CreateTempSubdirectory("11toXP-preferences-");
+        var journal = new ThemeJournal(directory.FullName);
+        var store = new ThemePreferenceStore(directory.FullName);
+        var path = Path.Combine(directory.FullName, "preferences.json");
+        try
+        {
+            var platform = new FakePlatform();
+            var app = new ThemeCoordinator(journal, platform, store);
+            var options = ThemePreferences.Default with
+            {
+                StartWithWindows = false,
+                Taskbar = TaskbarOptions.Default with
+                {
+                    OrderedQuickLaunch = [new(null, @"C:\Tools\Pinned.lnk"), new(QuickLaunchItem.FileExplorer, null)]
+                }
+            };
+            app.Apply(Image, options);
+            app.Restore();
+            var saved = new ThemePreferenceStore(directory.FullName).Load();
+            Require(!saved.StartWithWindows && saved.Taskbar.HasSameQuickLaunch(options.Taskbar) &&
+                !File.ReadAllText(path).Contains("Selected.jpg") && journal.Load() is null,
+                "Startup choice and Quick Launch order survive Restore without retaining wallpaper.");
+            app.Apply(null, saved);
+            File.WriteAllText(path, "malformed");
+            Require(store.Load().StartWithWindows, "A malformed preference file falls back to defaults.");
+            var reopened = new ThemeCoordinator(journal, platform, store);
+            reopened.Load();
+            reopened.Resume();
+            Require(journal.Load() is null && !platform.Shell, "A malformed preference file does not block journal recovery.");
+        }
+        finally
+        {
+            journal.Clear();
+            File.Delete(path);
             directory.Delete();
         }
     }
@@ -271,39 +540,59 @@ internal static class ThemeChecks
         public bool ShellWasStartedBeforeAutoHide { get; private set; }
         public int ShellCalls { get; private set; }
         public int AutoHideReads { get; private set; }
+        public int AutoHideWrites { get; private set; }
+        public bool AutoHideAvailable { get; set; } = true;
+        public bool? FailingAutoHideTarget { get; set; }
+        public Action<bool>? BeforeSetAutoHide { get; set; }
         public LunaVariant Variant { get; private set; }
         public int Captures { get; private set; }
         public int WallpaperCalls { get; private set; }
         public bool FailWallpaperApply { get; set; }
         public bool FailWallpaperRestore { get; set; }
+        public string? WallpaperRestoreError { get; set; }
         public bool FailAppearanceRestore { get; set; }
         public List<AppearanceComponents> AppearanceCaptures { get; } = [];
         public List<AppearanceComponents> AppearanceApplies { get; } = [];
         public List<AppearanceComponents> AppearanceRestores { get; } = [];
         public string Wallpaper { get; private set; } = Original;
         public string? Registered { get; set; }
+        public string? StartupRemovalFailure { get; set; }
+        public bool FailStartupRegistration { get; set; }
+        public int StartupCommandReads { get; private set; }
         public string CurrentCommand { get; set; } = "\"C:\\Tools\\11toXP.exe\" --background";
 
-        public string StartupCommand() => CurrentCommand;
+        public string StartupCommand()
+        {
+            StartupCommandReads++;
+            return CurrentCommand;
+        }
         public bool HasStartup(string command) => Registered == command;
         public void EnsureStartup(string command, string? previous)
         {
+            if (FailStartupRegistration)
+                throw new InvalidOperationException("Injected startup registration failure.");
             if (Registered is not null && Registered != command && Registered != previous)
                 throw new InvalidOperationException("Collision.");
             Registered = command;
         }
         public void RemoveStartup(string command)
         {
+            if (command == StartupRemovalFailure)
+                throw new InvalidOperationException("Injected startup removal failure.");
             if (Registered == command)
                 Registered = null;
         }
         public bool? ReadAutoHide()
         {
             AutoHideReads++;
-            return AutoHide;
+            return AutoHideAvailable ? AutoHide : null;
         }
         public bool SetAutoHide(bool enabled)
         {
+            AutoHideWrites++;
+            BeforeSetAutoHide?.Invoke(enabled);
+            if (enabled == FailingAutoHideTarget)
+                return false;
             if (enabled)
                 ShellWasStartedBeforeAutoHide = Shell;
             AutoHide = enabled;
@@ -327,6 +616,8 @@ internal static class ThemeChecks
             WallpaperCalls++;
             if (FailWallpaperRestore)
                 throw new InvalidOperationException("Injected wallpaper Restore failure.");
+            if (WallpaperRestoreError is { } error)
+                throw new InvalidOperationException(error);
             Wallpaper = plan.Monitors[0].Original;
         }
         public AppearanceSnapshot CaptureAppearance(AppearanceComponents components, AppearanceSnapshot? retained)
