@@ -1,6 +1,7 @@
 using System.IO;
 using System.Security.Principal;
 using System.Windows;
+using LunaDesktop.Browser;
 using LunaDesktop.State;
 
 namespace LunaDesktop;
@@ -13,6 +14,7 @@ public partial class App : Application
     private RegisteredWaitHandle? showRegistration;
     private ThemeCoordinator? coordinator;
     private ControlWindow? control;
+    private ExplorerWindow? explorer;
     private string? startupError;
     private string? directory;
 
@@ -73,7 +75,8 @@ public partial class App : Application
             showRegistration = ThreadPool.RegisterWaitForSingleObject(
                 showRequest, (_, _) => Dispatcher.BeginInvoke(ShowControl), null, Timeout.Infinite, executeOnlyOnce: false);
             directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "11toXP");
-            var platform = new ThemePlatform(directory, ShowControl, ShowWindowsTaskbar, ExplorerRestarted, ShellFaulted);
+            var platform = new ThemePlatform(directory, ShowControl, ShowWindowsTaskbar, ExplorerRestarted, ShellFaulted,
+                path => OpenXpExplorer(coordinator?.State?.Preferences.Variant ?? LunaVariant.Blue, path));
             coordinator = new ThemeCoordinator(new ThemeJournal(directory), platform);
             coordinator.Load();
         }
@@ -118,6 +121,28 @@ public partial class App : Application
     internal string? StartupError => startupError;
     internal string? StateDirectory => directory;
     internal void ClearStartupError() => startupError = null;
+
+    internal void OpenXpExplorer(LunaVariant variant, string? path = null)
+    {
+        if (explorer is null)
+        {
+            explorer = new ExplorerWindow(variant, directory);
+            explorer.Closed += (_, _) => explorer = null;
+            explorer.Show();
+            explorer.NavigateTo(path);
+        }
+        else
+        {
+            explorer.SetVariant(variant);
+            if (path is not null)
+                explorer.NavigateTo(path);
+            if (explorer.WindowState == WindowState.Minimized)
+                explorer.WindowState = WindowState.Normal;
+        }
+        explorer.Activate();
+    }
+
+    internal void UpdateXpExplorerVariant(LunaVariant variant) => explorer?.SetVariant(variant);
 
     internal void CloseControl(bool preview)
     {

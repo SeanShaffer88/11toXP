@@ -9,11 +9,11 @@ namespace LunaDesktop;
 
 internal static class WindowPosition
 {
-    public static void Restore(Window window, string directory)
+    public static void Restore(Window window, string directory, string fileName = "window.json")
     {
         try
         {
-            var path = Path.Combine(directory, "window.json");
+            var path = PlacementPath(directory, fileName);
             StateFiles.Guard(directory, directory: true);
             StateFiles.Guard(path, directory: false);
             using var stream = File.OpenRead(path);
@@ -43,18 +43,23 @@ internal static class WindowPosition
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException or JsonException) { }
     }
 
-    public static void Save(Window window, string directory)
+    public static void Save(Window window, string directory, string fileName = "window.json")
     {
         if (window.WindowState != WindowState.Normal || !GetWindowRect(new WindowInteropHelper(window).Handle, out Rect rect))
             return;
         try
         {
             var bounds = new Bounds(rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
-            StateFiles.WriteAtomically(directory, Path.Combine(directory, "window.json"),
+            StateFiles.WriteAtomically(directory, PlacementPath(directory, fileName),
                 stream => JsonSerializer.Serialize(stream, bounds));
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException) { }
     }
+
+    private static string PlacementPath(string directory, string fileName) =>
+        fileName is "window.json" or "browser-window.json"
+            ? Path.Combine(directory, fileName)
+            : throw new ArgumentOutOfRangeException(nameof(fileName));
 
     private sealed record Bounds(int Left, int Top, int Width, int Height);
 

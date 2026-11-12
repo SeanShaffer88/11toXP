@@ -14,6 +14,7 @@ internal sealed class LunaVisuals
     internal Brush BarText { get; }
     internal Brush Tray { get; }
     internal Brush MenuHeader { get; }
+    internal Brush MenuHeaderText { get; }
     internal Brush MenuLeft { get; }
     internal Brush MenuRight { get; }
     internal Brush MenuText { get; }
@@ -26,13 +27,14 @@ internal sealed class LunaVisuals
     internal Style ActiveTaskButtonStyle { get; }
     internal Style StartButtonStyle { get; }
     internal Style MenuButtonStyle { get; }
+    internal Style MenuHeaderButtonStyle { get; }
 
-    internal LunaVisuals()
+    internal LunaVisuals(LunaVariant variant = LunaVariant.Blue)
     {
         if (HighContrast)
         {
             Bar = Tray = MenuHeader = MenuLeft = MenuRight = SystemColors.WindowBrush;
-            BarText = MenuText = SystemColors.WindowTextBrush;
+            BarText = MenuText = MenuHeaderText = SystemColors.WindowTextBrush;
             MenuEdge = TaskEdge = SystemColors.WindowTextBrush;
             Start = Task = SystemColors.ControlBrush;
             ActiveTask = SystemColors.HighlightBrush;
@@ -43,6 +45,7 @@ internal sealed class LunaVisuals
             StartButtonStyle = TaskButtonStyle;
             MenuButtonStyle = ButtonStyle(MenuText, SystemColors.HighlightBrush,
                 SystemColors.HighlightTextBrush, SystemColors.WindowTextBrush, 1);
+            MenuHeaderButtonStyle = MenuButtonStyle;
             return;
         }
 
@@ -51,6 +54,7 @@ internal sealed class LunaVisuals
         Tray = Gradient((0, 0x4EBAF1), (.18, 0x177CC2), (.93, 0x116DAF), (1, 0x0D5190));
         MenuHeader = Gradient((0, 0x3789E5), (.22, 0x246CC7), (1, 0x084DA9));
         MenuLeft = Brushes.White;
+        MenuHeaderText = Brushes.White;
         MenuRight = Solid(0xD3E7FF);
         MenuText = Solid(0x142743);
         MenuEdge = Solid(0x0F449D);
@@ -58,10 +62,41 @@ internal sealed class LunaVisuals
         Task = Gradient((0, 0x4285DE), (.15, 0x3475D1), (1, 0x2058B5));
         ActiveTask = Gradient((0, 0x163D94), (.4, 0x1B4DAA), (1, 0x235FC4));
         TaskEdge = Solid(0x194CA9);
-        TaskButtonStyle = ButtonStyle(BarText, Solid(0x1955AC), Brushes.White, Brushes.White, 3);
+        uint hover = 0x1955AC;
+        if (variant == LunaVariant.Silver)
+        {
+            Bar = Gradient((0, 0xF7F9FC), (.2, 0xD8DCE5), (.93, 0xBEC5D4), (1, 0x8590A6));
+            BarText = Solid(0x172135);
+            Tray = Gradient((0, 0xF5F7FB), (.2, 0xDCE2ED), (1, 0xADB9CD));
+            MenuHeader = Gradient((0, 0x8494AF), (.24, 0x627491), (1, 0x485873));
+            MenuRight = Solid(0xDFE5EF);
+            MenuText = Solid(0x252E40);
+            MenuEdge = Solid(0x51627E);
+            Task = Gradient((0, 0xF8FAFF), (.25, 0xDFE4ED), (1, 0xC9D2E1));
+            ActiveTask = Gradient((0, 0x95A5BF), (1, 0xB8C4D8));
+            TaskEdge = Solid(0x697A97);
+            hover = 0x4F6182;
+        }
+        else if (variant == LunaVariant.OliveGreen)
+        {
+            Bar = Gradient((0, 0xE0E8BF), (.18, 0xB5C58D), (.9, 0xA7B982), (1, 0x768C51));
+            BarText = Solid(0x1E2A12);
+            Tray = Gradient((0, 0xE6EDD1), (.2, 0xC7D8A9), (1, 0x9DAF78));
+            MenuHeader = Gradient((0, 0x7A895C), (.26, 0x526238), (1, 0x3E4C27));
+            MenuRight = Solid(0xE4E9CE);
+            MenuText = Solid(0x263518);
+            MenuEdge = Solid(0x526439);
+            Task = Gradient((0, 0xE6EDD3), (.25, 0xCFDDB4), (1, 0xB6C896));
+            ActiveTask = Gradient((0, 0x92A66F), (1, 0xA8BB86));
+            TaskEdge = Solid(0x637B43);
+            hover = 0x4D6435;
+        }
+
+        TaskButtonStyle = ButtonStyle(BarText, Solid(hover), Brushes.White, Solid(0x14243B), 3);
         ActiveTaskButtonStyle = TaskButtonStyle;
-        StartButtonStyle = ButtonStyle(BarText, Solid(0x2B7023), Brushes.White, Brushes.White, 8);
-        MenuButtonStyle = ButtonStyle(MenuText, Solid(0x255DB0), Brushes.White, Solid(0x15418D), 0);
+        StartButtonStyle = ButtonStyle(Brushes.White, Solid(0x2B7023), Brushes.White, Brushes.White, 8);
+        MenuButtonStyle = ButtonStyle(MenuText, Solid(hover), Brushes.White, Solid(0x15418D), 0);
+        MenuHeaderButtonStyle = ButtonStyle(MenuHeaderText, Solid(hover), Brushes.White, Brushes.White, 3);
     }
 
     internal Button NewButton(string name, object content, Style style, Brush background, Brush? border = null)

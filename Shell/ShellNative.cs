@@ -152,6 +152,10 @@ internal static class ShellNative
     internal static extern bool ShowWindowAsync(nint window, int command);
 
     [DllImport("user32.dll", ExactSpelling = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool PostMessageW(nint window, uint message, nint wParam, nint lParam);
+
+    [DllImport("user32.dll", ExactSpelling = true)]
     internal static extern nuint GetClassLongPtrW(nint window, int index);
 
     [DllImport("dwmapi.dll")]

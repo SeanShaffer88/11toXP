@@ -1,24 +1,29 @@
 # 11toXP
 
-11toXP gives the Windows 11 desktop the blue Windows XP Luna look. One executable contains the taskbar, Start menu, configuration window, artwork, and .NET runtime.
+11toXP gives the Windows 11 desktop the Windows XP Luna look. One executable contains the taskbar, Start menu, XP Explorer, configuration window, artwork, and .NET runtime.
 
 ## Run
 
 Put `11toXP.exe` in a location you plan to keep, then open it.
 
-- **Apply** enables the XP-style taskbar and two-column Start menu. It changes supported desktop icons, pointer roles, and sound events, then starts 11toXP at subsequent sign-ins.
-- **Repair** reapplies the appearance and rebuilds the taskbar. It also updates the sign-in path if you moved the executable.
+- **Apply** enables the selected appearance components and starts 11toXP at subsequent sign-ins.
+- **Repair** applies changed preferences, refreshes the selected components, and updates the sign-in path if you moved the executable. Turning off a component restores the settings 11toXP still owns for that component.
 - **Restore** removes the XP-style taskbar and sign-in entry and restores the settings 11toXP saved. Restore before deleting the executable.
+- **Restore and Exit** closes 11toXP after successful restoration. A failed restore leaves the controls open for another attempt.
+
+Choose **Luna Blue**, **Luna Silver**, or **Luna Olive Green**. The taskbar and Start menu, desktop icons, cursors, and sounds each have their own control. Use **Group Similar Windows** and the Quick Launch list to configure task buttons and shortcuts. The taskbar context menu opens the settings, switches to the Windows taskbar, or opens XP Explorer.
+
+**Open XP Explorer** opens the built-in file browser with a folder tree, task pane, and address bar. It browses local folders and opens files through Windows. Use **Open in Windows Explorer** for native file operations and shell locations. **Use XP Explorer** routes supported taskbar and Start menu folder shortcuts to the built-in browser.
 
 **Change Wallpaper** starts unchecked. The unchecked default leaves Windows wallpaper untouched through Apply, Repair, Restore, sign-in, and Explorer recovery. To opt in, select a local JPG, PNG, or BMP. Keep the original and replacement files available. Repair requires the original displays. Restore handles connected original displays first, keeps pictures selected independently in Windows, and retries missing displays when reconnected. 11toXP supports static Picture mode and declines unsupported modes it can detect, including slideshow and Windows Spotlight. Uncheck the option and select Repair to restore the saved picture and stop managing it. [Microsoft wallpaper monitor status](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-idesktopwallpaper-getmonitorrect)
 
 **Show Windows Taskbar** in the XP Start menu pauses the XP taskbar and restores the Windows taskbar's original auto-hide setting. Select **Repair** to resume the XP taskbar. If Windows ignores the auto-hide request, both bars may be visible. The Windows key still opens the Windows Start menu.
 
-11toXP styles the built-in desktop icons for This PC, Documents, Network, and Recycle Bin if already visible. It uses original assets for those icons and four pointer roles, plus five original sounds for six supported events. High contrast, custom pointer sizes, and muted sound events can limit these changes. Windows Settings, Explorer interiors, individual app frames, system flyouts, and protected Windows screens retain their native appearance.
+11toXP styles the built-in desktop icons for This PC, Documents, Network, and Recycle Bin if already visible. It uses original assets for those icons and four pointer roles, plus five original sounds for six supported events. High contrast, custom pointer sizes, and muted sound events can limit these changes. Windows Settings, native Explorer, individual app frames, system flyouts, and protected Windows screens retain their native appearance.
 
 ## State And Recovery
 
-11toXP records original settings in `%LOCALAPPDATA%\11toXP\theme-state.json` before applying changes. It also stores control-window placement and local copies of generated appearance assets. Sign-in uses the app-owned `11toXP.0348C6BA` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Reopen 11toXP and select **Restore** after an interrupted operation. If no instance is running, `11toXP.exe --restore` can perform the same recovery. A running instance returns exit code 3 for this command and can restore through its window.
+11toXP records original settings and active preferences in `%LOCALAPPDATA%\11toXP\theme-state.json` before applying changes. It also stores control and browser window placement and local copies of generated appearance assets. Sign-in uses the app-owned `11toXP.0348C6BA` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Reopen 11toXP and select **Restore** after an interrupted operation. If no instance is running, `11toXP.exe --restore` can perform the same recovery. A running instance returns exit code 3 for this command and can restore through its window.
 
 After an OS build change, 11toXP uses its taskbar alongside the native one until Repair verifies auto-hide on the new build. The app uses Windows taskbar APIs and per-user settings. It makes no network requests. The bundled runtime can extract native libraries to the .NET temporary bundle cache at launch.
 
@@ -33,6 +38,6 @@ $check = Start-Process .\bin\bundle\11toXP.exe -ArgumentList '--self-test' -Pass
 if ($check.ExitCode -ne 0) { exit $check.ExitCode }
 ```
 
-`--self-test` uses an isolated temporary journal and a simulated Windows settings adapter. It checks default wallpaper isolation, opt-in and opt-out, rollback, retry, Explorer and sign-in recovery, startup collisions and moves, and taskbar compatibility decisions. `--preview` opens the controls with simulated actions for UI inspection. Live shell behavior requires an interactive Windows 11 desktop.
+`--self-test` uses an isolated temporary journal and a simulated Windows settings adapter. It checks default wallpaper isolation, opt-in and opt-out, rollback, retry, per-component transitions, legacy journals, Explorer and sign-in recovery, startup collisions and moves, and taskbar compatibility decisions. `--preview` opens the controls with simulated theme actions for UI inspection. Live shell behavior requires an interactive Windows 11 desktop.
 
 Project source uses the MIT license. The self-contained executable redistributes the .NET Windows Desktop runtime under its own license and notices. [Microsoft runtime licensing](https://github.com/dotnet/core/blob/main/license-information-windows.md)

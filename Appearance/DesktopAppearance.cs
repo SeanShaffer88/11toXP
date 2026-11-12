@@ -6,6 +6,9 @@ using Microsoft.Win32;
 
 namespace LunaDesktop.Appearance;
 
+[Flags]
+internal enum AppearanceComponents { None = 0, Icons = 1, Cursors = 2, Sounds = 4, All = Icons | Cursors | Sounds }
+
 internal sealed record AppearanceValue(string Data, RegistryValueKind Kind);
 
 internal sealed record AppearanceSnapshot(int Version, AppearanceValue?[] Values);
@@ -24,10 +27,10 @@ internal sealed class DesktopAppearance(string stateDirectory)
     // https://learn.microsoft.com/windows/win32/controls/themesfileformat-overview
     private static readonly Setting[] Settings =
     [
-        new(CursorKey, "Arrow", "Arrow.cur", Category.Cursor),
-        new(CursorKey, "Hand", "Hand.cur", Category.Cursor),
-        new(CursorKey, "Wait", "Wait.cur", Category.Cursor),
-        new(CursorKey, "AppStarting", "AppStarting.cur", Category.Cursor),
+        new(CursorKey, "Arrow", "Arrow.cur", AppearanceComponents.Cursors),
+        new(CursorKey, "Hand", "Hand.cur", AppearanceComponents.Cursors),
+        new(CursorKey, "Wait", "Wait.cur", AppearanceComponents.Cursors),
+        new(CursorKey, "AppStarting", "AppStarting.cur", AppearanceComponents.Cursors),
         Icon("{20D04FE0-3AEA-1069-A2D8-08002B30309D}", "", "Computer.ico"),
         Icon("{59031A47-3F72-44A7-89C5-5595FE6B30EE}", "", "Documents.ico"),
         Icon("{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}", "", "Network.ico"),
@@ -44,21 +47,23 @@ internal sealed class DesktopAppearance(string stateDirectory)
 
     private readonly string _assetDirectory = Path.Combine(stateDirectory, "Appearance-v1");
 
-    public AppearanceSnapshot Capture()
+    public AppearanceSnapshot Capture(AppearanceComponents components, AppearanceSnapshot? retained)
     {
-        var useCursors = CanUseCursors();
-        var soundsMuted = SoundsMuted();
-        var values = new AppearanceValue?[Settings.Length];
+        var useCursors = components.HasFlag(AppearanceComponents.Cursors) && CanUseCursors();
+        var soundsMuted = components.HasFlag(AppearanceComponents.Sounds) && SoundsMuted();
+        var values = retained?.Values.ToArray() ?? new AppearanceValue?[Settings.Length];
         for (var index = 0; index < Settings.Length; index++)
         {
             var setting = Settings[index];
+            if ((components & setting.Component) == 0)
+                continue;
             using var key = Registry.CurrentUser.OpenSubKey(setting.Key);
             var value = Read(key, setting.Name);
             if (IsOurValue(setting, value))
                 throw new InvalidDataException("An 11toXP appearance setting has no saved original value.");
 
-            if (setting.Category == Category.Cursor && !useCursors ||
-                setting.Category == Category.Sound && (soundsMuted || string.IsNullOrEmpty(value?.Data)))
+            if (setting.Component == AppearanceComponents.Cursors && !useCursors ||
+                setting.Component == AppearanceComponents.Sounds && (soundsMuted || string.IsNullOrEmpty(value?.Data)))
                 continue;
 
             values[index] = value;
@@ -83,26 +88,33 @@ internal sealed class DesktopAppearance(string stateDirectory)
         }
     }
 
-    public void Apply(AppearanceSnapshot baseline)
+    public static AppearanceSnapshot Retain(AppearanceSnapshot baseline, AppearanceComponents components) =>
+        baseline with
+        {
+            Values = baseline.Values.Select((value, index) =>
+                (components & Settings[index].Component) != 0 ? value : null).ToArray()
+        };
+
+    public void Apply(AppearanceSnapshot baseline, AppearanceComponents components)
     {
         Validate(baseline);
-        var useCursors = CanUseCursors();
-        var soundsMuted = SoundsMuted();
+        var useCursors = components.HasFlag(AppearanceComponents.Cursors) && CanUseCursors();
+        var soundsMuted = components.HasFlag(AppearanceComponents.Sounds) && SoundsMuted();
         var refreshCursors = false;
         var refreshIcons = false;
         var preparedAssets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         for (var index = 0; index < Settings.Length; index++)
         {
             var setting = Settings[index];
-            if (baseline.Values[index] is null ||
-                setting.Category == Category.Cursor && !useCursors ||
-                setting.Category == Category.Sound && soundsMuted)
+            if ((components & setting.Component) == 0 || baseline.Values[index] is null ||
+                setting.Component == AppearanceComponents.Cursors && !useCursors ||
+                setting.Component == AppearanceComponents.Sounds && soundsMuted)
                 continue;
 
             using var key = Registry.CurrentUser.OpenSubKey(setting.Key, writable: true);
             var current = Read(key, setting.Name);
             if (key is null || current is null ||
-                setting.Category == Category.Sound && current.Data.Length == 0)
+                setting.Component == AppearanceComponents.Sounds && current.Data.Length == 0)
                 continue;
 
             if (preparedAssets.Add(setting.Asset))
@@ -111,13 +123,13 @@ internal sealed class DesktopAppearance(string stateDirectory)
                 key.SetValue(setting.Name, AssetPath(setting), RegistryValueKind.String);
 
             // A previous attempt may have been interrupted after writing values.
-            refreshCursors |= setting.Category == Category.Cursor;
-            refreshIcons |= setting.Category == Category.Icon;
+            refreshCursors |= setting.Component == AppearanceComponents.Cursors;
+            refreshIcons |= setting.Component == AppearanceComponents.Icons;
         }
         Refresh(refreshCursors, refreshIcons);
     }
 
-    public void Restore(AppearanceSnapshot baseline)
+    public void Restore(AppearanceSnapshot baseline, AppearanceComponents components)
     {
         Validate(baseline);
         var remainingAssets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -126,6 +138,8 @@ internal sealed class DesktopAppearance(string stateDirectory)
         for (var index = 0; index < Settings.Length; index++)
         {
             var setting = Settings[index];
+            if ((components & setting.Component) == 0)
+                continue;
             var original = baseline.Values[index];
             using var key = Registry.CurrentUser.OpenSubKey(setting.Key, writable: original is not null);
             if (IsOurValue(setting, Read(key, setting.Name)))
@@ -137,12 +151,13 @@ internal sealed class DesktopAppearance(string stateDirectory)
             }
 
             // Repeat the refresh after interrupted restore attempts as well.
-            refreshCursors |= original is not null && setting.Category == Category.Cursor;
-            refreshIcons |= original is not null && setting.Category == Category.Icon;
+            refreshCursors |= original is not null && setting.Component == AppearanceComponents.Cursors;
+            refreshIcons |= original is not null && setting.Component == AppearanceComponents.Icons;
         }
         Refresh(refreshCursors, refreshIcons);
 
-        var assets = Settings.Select(setting => setting.Asset).Distinct(StringComparer.OrdinalIgnoreCase);
+        var assets = Settings.Where(setting => (setting.Component & components) != 0)
+            .Select(setting => setting.Asset).Distinct(StringComparer.OrdinalIgnoreCase);
         AppearanceAssets.Remove(_assetDirectory, assets.Except(remainingAssets, StringComparer.OrdinalIgnoreCase));
     }
 
@@ -173,15 +188,15 @@ internal sealed class DesktopAppearance(string stateDirectory)
     }
 
     private static Setting Icon(string clsid, string name, string asset) =>
-        new($@"{IconsKey}\{clsid}\DefaultIcon", name, asset, Category.Icon);
+        new($@"{IconsKey}\{clsid}\DefaultIcon", name, asset, AppearanceComponents.Icons);
 
     private static Setting Sound(string eventName, string asset) =>
-        new($@"{SoundsKey}\Apps\.Default\{eventName}\.Current", "", asset, Category.Sound);
+        new($@"{SoundsKey}\Apps\.Default\{eventName}\.Current", "", asset, AppearanceComponents.Sounds);
 
     private string AssetPath(Setting setting)
     {
         var path = Path.Combine(_assetDirectory, setting.Asset);
-        return setting.Category == Category.Icon ? path + ",0" : path;
+        return setting.Component == AppearanceComponents.Icons ? path + ",0" : path;
     }
 
     private bool IsOurValue(Setting setting, AppearanceValue? value) =>
@@ -208,7 +223,5 @@ internal sealed class DesktopAppearance(string stateDirectory)
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SystemParametersInfoW(uint action, uint parameter, nint value, uint flags);
 
-    private enum Category { Cursor, Icon, Sound }
-
-    private sealed record Setting(string Key, string Name, string Asset, Category Category);
+    private sealed record Setting(string Key, string Name, string Asset, AppearanceComponents Component);
 }
