@@ -5,6 +5,8 @@ using LunaDesktop.Shell;
 
 namespace LunaDesktop.State;
 
+internal readonly record struct TaskbarAvailability(bool HasTargets, bool CanUseXpOnly);
+
 internal interface IThemePlatform
 {
     int Build { get; }
@@ -21,6 +23,7 @@ internal interface IThemePlatform
     void ValidateAppearance(AppearanceSnapshot baseline);
     void ApplyAppearance(AppearanceSnapshot baseline, AppearanceComponents components);
     void RestoreAppearance(AppearanceSnapshot baseline, AppearanceComponents components);
+    TaskbarAvailability InspectTaskbar(TaskbarOptions options);
     void StartShell(LunaVariant variant, TaskbarOptions options, bool allowTrayReveal);
     void StopShell();
 }
@@ -28,10 +31,10 @@ internal interface IThemePlatform
 internal sealed class ThemePlatform(
     string directory, Action openControl, Action showWindowsTaskbar, Action explorerRestarted,
     Action<Exception> shellFaulted, Action<string?> openXpExplorer, Action toggleTrayReveal,
-    Func<bool> isTrayRevealed) : IThemePlatform
+    Func<bool> isTrayRevealed, Action<TaskbarButtonSize> requestResize) : IThemePlatform
 {
     private readonly DesktopAppearance appearance = new(directory);
-    private LunaShell? shell;
+    private readonly Dictionary<string, LunaShell> shells = new(StringComparer.OrdinalIgnoreCase);
     private LunaVariant shellVariant;
     private TaskbarOptions? shellOptions;
     private bool shellAllowsTrayReveal;
@@ -54,54 +57,78 @@ internal sealed class ThemePlatform(
     public void RestoreAppearance(AppearanceSnapshot baseline, AppearanceComponents components) =>
         appearance.Restore(baseline, components);
 
-    internal bool CanFocusXpTaskbar => shell?.CanFocusStart == true;
-    internal bool TryFocusXpTaskbar() => shell?.TryFocusStart() == true;
+    internal bool CanFocusXpTaskbar => shells.Values.Any(shell => shell.CanFocusStart);
+    internal bool TryFocusXpTaskbar() => shells.Values.Any(shell => shell.TryFocusStart());
+
+    public TaskbarAvailability InspectTaskbar(TaskbarOptions options)
+    {
+        var connected = ShellDisplay.Enumerate();
+        var targets = ShellDisplay.Resolve(options, connected);
+        return new(targets.Length > 0, connected.Length == 1 && targets.Length == 1);
+    }
 
     public void StartShell(LunaVariant variant, TaskbarOptions options, bool allowTrayReveal)
     {
-        if (shell is not null && shellVariant == variant && shellAllowsTrayReveal == allowTrayReveal &&
-            shellOptions is { } previous &&
-            previous.Grouping == options.Grouping && previous.UseXpExplorer == options.UseXpExplorer &&
-            previous.HasSameQuickLaunch(options))
+        var connected = ShellDisplay.Enumerate();
+        var targets = ShellDisplay.Resolve(options, connected).OrderByDescending(display => display.IsPrimary)
+            .ThenBy(display => display.Id, StringComparer.OrdinalIgnoreCase).ToArray();
+        allowTrayReveal &= connected.Length == 1 && targets.Length == 1;
+        if (shellVariant == variant && shellAllowsTrayReveal == allowTrayReveal &&
+            shellOptions is { } previous && previous.HasSameLayout(options) &&
+            targets.Select(display => display.Id).SequenceEqual(shells.Keys, StringComparer.OrdinalIgnoreCase))
         {
-            shell.Repair();
+            foreach (var shell in shells.Values)
+                shell.Repair();
             return;
         }
         StopShell();
-        var candidate = new LunaShell(openControl, showWindowsTaskbar, variant, options, openXpExplorer,
-            allowTrayReveal ? toggleTrayReveal : null, isTrayRevealed);
-        candidate.ExplorerRestarted += explorerRestarted;
-        candidate.ShellFaulted += shellFaulted;
         try
         {
-            candidate.Start();
-            shell = candidate;
+            foreach (var display in targets)
+            {
+                var candidate = new LunaShell(openControl, showWindowsTaskbar, variant, options, openXpExplorer,
+                    allowTrayReveal ? toggleTrayReveal : null, isTrayRevealed, display.Id, requestResize);
+                shells.Add(display.Id, candidate);
+                candidate.ExplorerRestarted += explorerRestarted;
+                candidate.ShellFaulted += shellFaulted;
+                candidate.Start();
+            }
             shellVariant = variant;
             shellOptions = options;
             shellAllowsTrayReveal = allowTrayReveal;
         }
         catch
         {
-            candidate.Dispose();
+            try { StopShell(); }
+            catch { /* Preserve the original appbar registration error. */ }
             throw;
         }
     }
 
     public void StopShell()
     {
-        if (shell is null)
-            return;
-        shell.ExplorerRestarted -= explorerRestarted;
-        shell.ShellFaulted -= shellFaulted;
-        shell.Dispose();
-        shell = null;
+        var previous = shells.Values.ToArray();
+        shells.Clear();
         shellOptions = null;
+        var errors = new List<Exception>();
+        foreach (var shell in previous)
+        {
+            shell.ExplorerRestarted -= explorerRestarted;
+            shell.ShellFaulted -= shellFaulted;
+            try { shell.Dispose(); }
+            catch (Exception error) { errors.Add(error); }
+        }
+        if (errors.Count > 0)
+            throw new AggregateException("11toXP could not close every taskbar.", errors);
     }
 }
 
 internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform platform, ThemePreferenceStore? preferencesStore = null)
 {
+    private ThemePreferences? taskbarPreview;
+
     public ThemeState? State { get; private set; }
+    public bool IsTaskbarPreviewActive => taskbarPreview is not null;
     public bool ShellPaused { get; private set; }
     public bool TrayRevealed { get; private set; }
     public string ShellStatus { get; private set; } = "Windows taskbar";
@@ -110,6 +137,127 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
     public string StartupStatus { get; private set; } = "Off";
     public string CompatibilityStatus { get; private set; } = "Ready";
     public RecoveryFailure? LastRecoveryFailure { get; private set; }
+
+    public bool NeedsTaskbarPreview(ThemePreferences candidate)
+    {
+        var current = State?.Preferences;
+        if (current is null)
+            return candidate.UseTaskbar;
+        if (!current.UseTaskbar && !candidate.UseTaskbar)
+            return false;
+        return ShellPaused || current.UseTaskbar != candidate.UseTaskbar || current.Variant != candidate.Variant ||
+            current.KeepWindowsTrayVisible != candidate.KeepWindowsTrayVisible || !current.Taskbar.HasSameLayout(candidate.Taskbar);
+    }
+
+    public void BeginTaskbarPreview(ThemePreferences candidate)
+    {
+        RequireNoTaskbarPreview();
+        if (State is not null)
+            ActiveState();
+        taskbarPreview = candidate.CheckedCopy();
+        try { ShowPreviewShell(taskbarPreview); }
+        catch (Exception error)
+        {
+            taskbarPreview = null;
+            RestoreShellAfterPreview(error);
+            throw;
+        }
+    }
+
+    public void CancelTaskbarPreview()
+    {
+        if (taskbarPreview is null)
+            return;
+        taskbarPreview = null;
+        RestoreShellAfterPreview();
+    }
+
+    public void CommitTaskbarPreview(Action applyConfirmed)
+    {
+        if (taskbarPreview is null)
+            throw new InvalidOperationException("There is no taskbar preview to keep.");
+        ArgumentNullException.ThrowIfNull(applyConfirmed);
+        taskbarPreview = null;
+        try { applyConfirmed(); }
+        catch (Exception error)
+        {
+            RestoreShellAfterPreview(error);
+            throw;
+        }
+    }
+
+    public void KeepTaskbarResize(TaskbarButtonSize size)
+    {
+        RequireNoTaskbarPreview();
+        var state = ActiveState();
+        var previous = state.Preferences;
+        if (!previous.UseTaskbar || previous.Taskbar.IsLocked || ShellPaused)
+            throw new InvalidOperationException("Unlock the active XP taskbar before resizing.");
+        var preferences = (previous with { Taskbar = previous.Taskbar with { ButtonSize = size } }).CheckedCopy();
+        state.Preferences = preferences;
+        try { journal.Save(state); }
+        catch
+        {
+            state.Preferences = previous;
+            throw;
+        }
+        RestoreCommittedShell();
+        SavePreferences(preferences);
+    }
+
+    private void RequireNoTaskbarPreview()
+    {
+        if (IsTaskbarPreviewActive)
+            throw new InvalidOperationException("Keep or revert the taskbar preview first.");
+    }
+
+    private void ShowPreviewShell(ThemePreferences candidate)
+    {
+        if (candidate.UseTaskbar)
+            platform.StartShell(candidate.Variant, candidate.Taskbar, allowTrayReveal: false);
+        else
+            platform.StopShell();
+    }
+
+    private void RestoreCommittedShell()
+    {
+        if (!ShellPaused && State is { Phase: ThemePhase.Active, Preferences.UseTaskbar: true } state)
+        {
+            var preferences = state.Preferences;
+            var availability = platform.InspectTaskbar(preferences.Taskbar);
+            platform.StartShell(preferences.Variant, preferences.Taskbar,
+                availability.CanUseXpOnly && !preferences.KeepWindowsTrayVisible);
+        }
+        else
+        {
+            platform.StopShell();
+        }
+    }
+
+    private void RestoreShellAfterPreview(Exception? primary = null)
+    {
+        try { RestoreCommittedShell(); }
+        catch (Exception rebuildError)
+        {
+            var errors = new List<Exception>();
+            var message = "11toXP could not rebuild the previous XP taskbar.";
+            if (primary is not null)
+            {
+                errors.Add(primary);
+                message = $"{primary.Message} {message}";
+            }
+            errors.Add(rebuildError);
+            try { PauseShellAfterFault(rebuildError); }
+            catch (Exception fallbackError)
+            {
+                errors.Add(fallbackError);
+                throw new InvalidOperationException($"{message} Windows taskbar recovery needs attention. {fallbackError.Message}",
+                    new AggregateException(errors));
+            }
+            throw new InvalidOperationException($"{message} The XP taskbar is paused. {rebuildError.Message}",
+                new AggregateException(errors));
+        }
+    }
 
     public void Load()
     {
@@ -147,6 +295,7 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
 
     public void Apply(string? image, ThemePreferences? preferences = null)
     {
+        RequireNoTaskbarPreview();
         if (State is not null)
             throw new InvalidOperationException("An existing restore record needs Repair or Restore.");
         var options = (preferences ?? ThemePreferences.Default).CheckedCopy();
@@ -184,6 +333,7 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
 
     public void Repair(string? image, ThemePreferences? preferences = null)
     {
+        RequireNoTaskbarPreview();
         var state = ActiveState();
         var options = (preferences ?? state.Preferences).CheckedCopy();
         var previous = state.Preferences;
@@ -229,13 +379,29 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
 
     public void ExplorerRestarted()
     {
+        if (taskbarPreview is { } candidate)
+        {
+            ShowPreviewShell(candidate);
+            return;
+        }
         if (ShellPaused || State is not { Phase: ThemePhase.Active, Preferences.UseTaskbar: true } state)
             return;
         RefreshShell(state, verifyBuild: false);
     }
 
+    public void DisplayTopologyChanged()
+    {
+        // End the candidate before reconciling global auto-hide for the actual display topology.
+        taskbarPreview = null;
+        if (ShellPaused || State is not { Phase: ThemePhase.Active, Preferences.UseTaskbar: true } state)
+            platform.StopShell();
+        else
+            RefreshShell(state, verifyBuild: false);
+    }
+
     public void ShowWindowsTaskbar()
     {
+        RequireNoTaskbarPreview();
         var state = ActiveState();
         platform.StopShell();
         ShellPaused = true;
@@ -247,9 +413,10 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
 
     public void ToggleTrayReveal()
     {
+        RequireNoTaskbarPreview();
         var state = ActiveState();
         if (ShellPaused || !state.Preferences.UseTaskbar || state.Preferences.KeepWindowsTrayVisible ||
-            state.AutoHideBuild != platform.Build)
+            state.AutoHideBuild != platform.Build || !platform.InspectTaskbar(state.Preferences.Taskbar).CanUseXpOnly)
             throw new InvalidOperationException("Repair the XP-only taskbar to use temporary tray reveal.");
 
         bool autoHide = platform.ReadAutoHide() ??
@@ -274,18 +441,40 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
 
     public void RecoverShellFault(Exception fault)
     {
+        if (IsTaskbarPreviewActive)
+        {
+            CancelTaskbarPreview();
+            return;
+        }
+        PauseShellAfterFault(fault);
+    }
+
+    private void PauseShellAfterFault(Exception fault)
+    {
+        LastRecoveryFailure = RecoveryFailure.From("XP taskbar", fault);
+        ShellPaused = State is not null;
+        TrayRevealed = false;
+        ShellStatus = ShellPaused ? "Paused after a taskbar error" : "Windows taskbar";
+        CompatibilityStatus = ShellPaused ? "Repair needed" : "Ready";
+        try { platform.StopShell(); }
+        catch (Exception stopError)
+        {
+            try { RestoreAutoHideAfterFault(); }
+            catch (Exception restoreError)
+            {
+                throw new AggregateException("11toXP could not close its taskbars or restore Windows taskbar auto-hide.",
+                    stopError, restoreError);
+            }
+            throw;
+        }
+        RestoreAutoHideAfterFault();
+    }
+
+    private void RestoreAutoHideAfterFault()
+    {
         if (State is not { } state)
             return;
-        LastRecoveryFailure = RecoveryFailure.From("XP taskbar", fault);
-        ShellPaused = true;
-        TrayRevealed = false;
-        ShellStatus = "Paused after a taskbar error";
-        CompatibilityStatus = "Repair needed";
-        try
-        {
-            try { platform.StopShell(); }
-            finally { RestoreAutoHide(state); }
-        }
+        try { RestoreAutoHide(state); }
         catch (Exception error)
         {
             LastRecoveryFailure = RecoveryFailure.From("Windows taskbar", error);
@@ -295,8 +484,14 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
 
     public void Restore()
     {
+        var wasPreviewing = IsTaskbarPreviewActive;
+        taskbarPreview = null;
         if (State is not { } state)
+        {
+            if (wasPreviewing)
+                platform.StopShell();
             return;
+        }
         state.Phase = ThemePhase.Restoring;
         SaveRestoreJournal(() => journal.Save(state));
         TrayRevealed = false;
@@ -330,7 +525,11 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
         CompatibilityStatus = "Ready";
     }
 
-    public void StopShell() => platform.StopShell();
+    public void StopShell()
+    {
+        taskbarPreview = null;
+        platform.StopShell();
+    }
 
     private ThemeState ActiveState() =>
         State is { Phase: ThemePhase.Active } state ? state :
@@ -504,13 +703,31 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
             CompatibilityStatus = "XP taskbar disabled";
             return;
         }
-        try { platform.StartShell(state.Preferences.Variant, state.Preferences.Taskbar, !state.Preferences.KeepWindowsTrayVisible); }
+        var availability = platform.InspectTaskbar(state.Preferences.Taskbar);
+        if (!availability.CanUseXpOnly)
+        {
+            RestoreAutoHide(state);
+            TrayRevealed = false;
+        }
+        try
+        {
+            platform.StartShell(state.Preferences.Variant, state.Preferences.Taskbar,
+                availability.CanUseXpOnly && !state.Preferences.KeepWindowsTrayVisible);
+        }
         catch
         {
             RestoreAutoHide(state);
             throw;
         }
-        ShellStatus = "XP taskbar active";
+        availability = platform.InspectTaskbar(state.Preferences.Taskbar);
+        ShellStatus = availability.HasTargets ? "XP taskbar active" : "Selected displays disconnected";
+        if (!availability.CanUseXpOnly)
+        {
+            RestoreAutoHide(state);
+            TrayRevealed = false;
+            CompatibilityStatus = availability.HasTargets ? "Windows taskbars follow Windows settings" : "Waiting for a selected display";
+            return;
+        }
         var current = platform.ReadAutoHide();
         if (current is null)
         {

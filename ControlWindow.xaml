@@ -147,6 +147,34 @@
                 <ComboBoxItem Content="Always" AutomationProperties.AutomationId="TaskGroupingAlways"/>
               </ComboBox>
             </DockPanel>
+            <DockPanel Margin="0,0,0,6">
+              <Label Content="Taskbar Button Size" Target="{Binding ElementName=TaskbarButtonSizeChoice}"
+                     Padding="0" Margin="0,0,10,0" VerticalAlignment="Center" Foreground="{DynamicResource Ink}"/>
+              <ComboBox x:Name="TaskbarButtonSizeChoice" MinWidth="142" MinHeight="28" HorizontalAlignment="Right"
+                        AutomationProperties.AutomationId="TaskbarButtonSize" AutomationProperties.Name="Taskbar Button Size">
+                <ComboBoxItem Content="Large" AutomationProperties.AutomationId="TaskbarButtonLarge"/>
+                <ComboBoxItem Content="Small" AutomationProperties.AutomationId="TaskbarButtonSmall"/>
+              </ComboBox>
+            </DockPanel>
+            <UniformGrid Columns="2" Margin="0,0,0,4">
+              <CheckBox x:Name="ShowTaskbarLabels" Content="Show task button labels" MinHeight="26"
+                        AutomationProperties.AutomationId="ShowTaskbarLabels"/>
+              <CheckBox x:Name="LockTaskbar" Content="Lock the Taskbar" MinHeight="26"
+                        ToolTip="Unlock to resize the XP taskbar using its top edge."
+                        AutomationProperties.AutomationId="LockTaskbar"/>
+            </UniformGrid>
+            <Expander x:Name="TaskbarDisplays" Header="Displays" Margin="0,0,0,8"
+                      AutomationProperties.AutomationId="TaskbarDisplays">
+              <StackPanel Margin="19,2,0,3">
+                <CheckBox x:Name="UsePrimaryDisplay" Content="Follow the primary display" MinHeight="27"
+                          AutomationProperties.AutomationId="UsePrimaryDisplay"
+                          Checked="DisplayModeChanged" Unchecked="DisplayModeChanged"/>
+                <StackPanel x:Name="TaskbarDisplayChoices" AutomationProperties.Name="Displays for the XP taskbar"
+                            AutomationProperties.AutomationId="TaskbarDisplayChoices"/>
+                <TextBlock Text="Windows manages its native taskbars when multiple displays are connected."
+                           TextWrapping="Wrap" Margin="0,4,0,1"/>
+              </StackPanel>
+            </Expander>
             <TextBlock Text="Quick Launch" FontWeight="Bold" Margin="0,0,0,5"/>
             <Grid>
               <Grid.ColumnDefinitions>
@@ -192,31 +220,35 @@
             <Button Content="Export Diagnostics…"
                     AutomationProperties.AutomationId="ExportDiagnostics" Click="ExportDiagnosticsClick"/>
           </WrapPanel>
-          <Border Padding="10,7" Background="{DynamicResource StatusPanel}" BorderBrush="{DynamicResource Rule}" BorderThickness="1">
-            <Grid>
-              <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="98"/>
-                <ColumnDefinition Width="*"/>
-              </Grid.ColumnDefinitions>
-              <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-              </Grid.RowDefinitions>
-              <TextBlock Text="Taskbar" FontWeight="Bold" Margin="0,0,0,4"/>
-              <TextBlock Grid.Column="1" x:Name="ShellValue" Margin="0,0,0,4" TextWrapping="Wrap"/>
-              <TextBlock Grid.Row="1" Text="Appearance" FontWeight="Bold" Margin="0,0,0,4"/>
-              <TextBlock Grid.Row="1" Grid.Column="1" x:Name="AppearanceValue" Margin="0,0,0,4" TextWrapping="Wrap"/>
-              <TextBlock Grid.Row="2" Text="Wallpaper" FontWeight="Bold" Margin="0,0,0,4"/>
-              <TextBlock Grid.Row="2" Grid.Column="1" x:Name="WallpaperValue" Margin="0,0,0,4" TextWrapping="Wrap"/>
-              <TextBlock Grid.Row="3" Text="Sign-in" FontWeight="Bold" Margin="0,0,0,4"/>
-              <TextBlock Grid.Row="3" Grid.Column="1" x:Name="StartupValue" Margin="0,0,0,4" TextWrapping="Wrap"/>
-              <TextBlock Grid.Row="4" Text="Compatibility" FontWeight="Bold"/>
-              <TextBlock Grid.Row="4" Grid.Column="1" x:Name="CompatibilityValue" TextWrapping="Wrap"/>
-            </Grid>
-          </Border>
+          <Expander Header="Status details" AutomationProperties.AutomationId="StatusDetails"
+                    AutomationProperties.Name="Status details" Expanded="StatusDetailsExpanded">
+            <Border Margin="0,4,0,0" Padding="10,7" Background="{DynamicResource StatusPanel}"
+                    BorderBrush="{DynamicResource Rule}" BorderThickness="1">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="98"/>
+                  <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                  <RowDefinition Height="Auto"/>
+                  <RowDefinition Height="Auto"/>
+                  <RowDefinition Height="Auto"/>
+                  <RowDefinition Height="Auto"/>
+                  <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <TextBlock Text="Taskbar" FontWeight="Bold" Margin="0,0,0,4"/>
+                <TextBlock Grid.Column="1" x:Name="ShellValue" Margin="0,0,0,4" TextWrapping="Wrap"/>
+                <TextBlock Grid.Row="1" Text="Appearance" FontWeight="Bold" Margin="0,0,0,4"/>
+                <TextBlock Grid.Row="1" Grid.Column="1" x:Name="AppearanceValue" Margin="0,0,0,4" TextWrapping="Wrap"/>
+                <TextBlock Grid.Row="2" Text="Wallpaper" FontWeight="Bold" Margin="0,0,0,4"/>
+                <TextBlock Grid.Row="2" Grid.Column="1" x:Name="WallpaperValue" Margin="0,0,0,4" TextWrapping="Wrap"/>
+                <TextBlock Grid.Row="3" Text="Sign-in" FontWeight="Bold" Margin="0,0,0,4"/>
+                <TextBlock Grid.Row="3" Grid.Column="1" x:Name="StartupValue" Margin="0,0,0,4" TextWrapping="Wrap"/>
+                <TextBlock Grid.Row="4" Text="Compatibility" FontWeight="Bold"/>
+                <TextBlock Grid.Row="4" Grid.Column="1" x:Name="CompatibilityValue" TextWrapping="Wrap"/>
+              </Grid>
+            </Border>
+          </Expander>
         </StackPanel>
       </ScrollViewer>
       <StackPanel Grid.Row="2" Margin="22,3,22,15">

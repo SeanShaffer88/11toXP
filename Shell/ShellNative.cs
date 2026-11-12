@@ -12,6 +12,10 @@ internal static class ShellNative
     internal const uint AppBarActivate = 6;
     internal const uint AppBarWindowPositionChanged = 9;
     internal const uint BottomEdge = 3;
+    internal const uint MonitorDefaultToNearest = 2;
+    internal const uint PrimaryMonitor = 1;
+    internal const uint GetMonitorInterfaceName = 1;
+    internal const uint DwmExtendedFrameBounds = 9;
 
     internal const int ActivateMessage = 0x0006;
     internal const int SettingChangeMessage = 0x001A;
@@ -52,18 +56,39 @@ internal static class ShellNative
         };
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    internal struct MonitorInfo
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    internal struct MonitorInfoEx
     {
         private uint size;
         internal Rectangle Area;
         internal Rectangle WorkArea;
         internal uint Flags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        internal string DeviceName;
 
-        internal static MonitorInfo Create() => new() { size = (uint)Marshal.SizeOf<MonitorInfo>() };
+        internal static MonitorInfoEx Create() => new() { size = (uint)Marshal.SizeOf<MonitorInfoEx>() };
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    internal struct DisplayDevice
+    {
+        private uint size;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        internal string Name;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
+        internal string Description;
+        internal uint StateFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
+        internal string Id;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
+        internal string Key;
+
+        internal static DisplayDevice Create() => new() { size = (uint)Marshal.SizeOf<DisplayDevice>() };
     }
 
     internal delegate bool EnumWindowsCallback(nint window, nint parameter);
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal delegate bool EnumDisplayMonitorsCallback(nint monitor, nint deviceContext, nint area, nint parameter);
 
     internal delegate void WinEventCallback(nint hook, uint eventId, nint window,
         int objectId, int childId, uint eventThread, uint eventTime);
@@ -74,14 +99,20 @@ internal static class ShellNative
     [DllImport("user32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
     internal static extern uint RegisterWindowMessageW(string name);
 
-    // POINT consists of two adjacent signed 32-bit coordinates passed by value.
-    // A zero value denotes (0, 0), which is always on the primary monitor.
     [DllImport("user32.dll")]
-    internal static extern nint MonitorFromPoint(long point, uint flags);
+    internal static extern nint MonitorFromWindow(nint window, uint flags);
 
-    [DllImport("user32.dll", ExactSpelling = true)]
+    [DllImport("user32.dll", ExactSpelling = true, CharSet = CharSet.Unicode)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    internal static extern bool GetMonitorInfoW(nint monitor, ref MonitorInfo info);
+    internal static extern bool GetMonitorInfoW(nint monitor, ref MonitorInfoEx info);
+
+    [DllImport("user32.dll", ExactSpelling = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool EnumDisplayDevicesW(string deviceName, uint index, ref DisplayDevice device, uint flags);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool EnumDisplayMonitors(nint deviceContext, nint area, EnumDisplayMonitorsCallback callback, nint parameter);
 
     [DllImport("user32.dll")]
     internal static extern uint GetDpiForWindow(nint window);
@@ -160,4 +191,7 @@ internal static class ShellNative
 
     [DllImport("dwmapi.dll")]
     internal static extern int DwmGetWindowAttribute(nint window, uint attribute, out uint value, uint size);
+
+    [DllImport("dwmapi.dll")]
+    internal static extern int DwmGetWindowAttribute(nint window, uint attribute, out Rectangle value, uint size);
 }

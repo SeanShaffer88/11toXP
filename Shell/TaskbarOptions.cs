@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 namespace LunaDesktop.Shell;
 
 internal enum TaskGrouping { Never, Always }
+internal enum TaskbarButtonSize { Large, Small }
 internal enum QuickLaunchItem { FileExplorer, Settings, XpExplorer }
 
 internal sealed record QuickLaunchEntry(QuickLaunchItem? BuiltIn, string? ShortcutPath)
@@ -70,8 +71,13 @@ internal sealed record QuickLaunchEntry(QuickLaunchItem? BuiltIn, string? Shortc
 internal sealed record TaskbarOptions(TaskGrouping Grouping, QuickLaunchItem[] QuickLaunch, bool UseXpExplorer)
 {
     internal const int MaximumQuickLaunchItems = 12;
+    internal const int MaximumDisplayIds = 32;
     internal static TaskbarOptions Default => new(TaskGrouping.Never, [QuickLaunchItem.FileExplorer, QuickLaunchItem.Settings], false);
     public QuickLaunchEntry[]? OrderedQuickLaunch { get; init; }
+    public TaskbarButtonSize ButtonSize { get; init; } = TaskbarButtonSize.Large;
+    public bool ShowLabels { get; init; } = true;
+    public bool IsLocked { get; init; } = true;
+    public string[]? DisplayIds { get; init; }
 
     internal IReadOnlyList<QuickLaunchEntry> EffectiveQuickLaunch => OrderedQuickLaunch ??
         QuickLaunch.Select(item => new QuickLaunchEntry(item, null)).ToArray();
@@ -79,8 +85,19 @@ internal sealed record TaskbarOptions(TaskGrouping Grouping, QuickLaunchItem[] Q
     internal TaskbarOptions CheckedCopy()
     {
         Validate();
-        return this with { QuickLaunch = [.. QuickLaunch], OrderedQuickLaunch = OrderedQuickLaunch?.ToArray() };
+        return this with
+        {
+            QuickLaunch = [.. QuickLaunch],
+            OrderedQuickLaunch = OrderedQuickLaunch?.ToArray(),
+            DisplayIds = DisplayIds?.ToArray()
+        };
     }
+
+    internal bool HasSameLayout(TaskbarOptions other) =>
+        Grouping == other.Grouping && UseXpExplorer == other.UseXpExplorer && ButtonSize == other.ButtonSize &&
+        ShowLabels == other.ShowLabels && IsLocked == other.IsLocked && HasSameQuickLaunch(other) &&
+        (DisplayIds is null ? other.DisplayIds is null : other.DisplayIds is { } ids &&
+            DisplayIds.Length == ids.Length && new HashSet<string>(DisplayIds, StringComparer.OrdinalIgnoreCase).SetEquals(ids));
 
     internal bool HasSameQuickLaunch(TaskbarOptions other)
     {
@@ -91,9 +108,13 @@ internal sealed record TaskbarOptions(TaskGrouping Grouping, QuickLaunchItem[] Q
 
     internal void Validate()
     {
-        if (!Enum.IsDefined(Grouping) || QuickLaunch is null || QuickLaunch.Length > 3 ||
+        if (!Enum.IsDefined(Grouping) || !Enum.IsDefined(ButtonSize) || QuickLaunch is null || QuickLaunch.Length > 3 ||
             QuickLaunch.Any(item => !Enum.IsDefined(item)) || QuickLaunch.Distinct().Count() != QuickLaunch.Length)
             throw new InvalidDataException("The taskbar options are invalid.");
+        if (DisplayIds is { } displays && (displays.Length is 0 or > MaximumDisplayIds ||
+            displays.Any(id => string.IsNullOrWhiteSpace(id) || id.Length > 256 || id.Any(char.IsControl)) ||
+            displays.Distinct(StringComparer.OrdinalIgnoreCase).Count() != displays.Length))
+            throw new InvalidDataException("The taskbar display selection is invalid.");
         if (OrderedQuickLaunch is not { } entries)
             return;
 

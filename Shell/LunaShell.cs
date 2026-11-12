@@ -6,6 +6,7 @@ using System.Security;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -13,12 +14,10 @@ using System.Windows.Threading;
 
 namespace LunaDesktop.Shell;
 
-/// <summary>Owns the visible XP-style shell surfaces for the primary display.</summary>
+/// <summary>Owns the visible XP-style shell surfaces for one display.</summary>
 public sealed class LunaShell : IDisposable
 {
-    private const double BarHeight = 38;
-    private const double MinimumTaskWidth = 86;
-    private const double MaximumTaskWidth = 163;
+    private const double ResizeGripHeight = 7;
     private const int StateChangedNotification = 0;
     private const int PositionChangedNotification = 1;
     private const int FullScreenNotification = 2;
@@ -32,6 +31,8 @@ public sealed class LunaShell : IDisposable
     private readonly Dictionary<TaskbarKey, TaskButton> taskButtons = [];
     private readonly LunaVariant variant;
     private readonly TaskbarOptions options;
+    private readonly string? displayId;
+    private readonly Action<TaskbarButtonSize>? requestResize;
     private readonly Action<string?>? openXpExplorer;
     private readonly DispatcherTimer clockTimer;
     private readonly uint callbackMessage;
@@ -51,11 +52,14 @@ public sealed class LunaShell : IDisposable
     private Button? trayRevealButton;
     private Button? start;
     private ShellNative.Rectangle? reservation;
+    private ShellDisplay? display;
     private bool registered;
     private bool positionQueued;
     private bool restartQueued;
     private bool positioning;
     private bool fullScreen;
+    private nint fullScreenWindow;
+    private bool fullScreenFromBounds;
     private bool arranging;
     private bool disposed;
 
@@ -66,7 +70,7 @@ public sealed class LunaShell : IDisposable
 
     internal LunaShell(Action openControl, Action? showWindowsTaskbar, LunaVariant variant,
         TaskbarOptions options, Action<string?>? openXpExplorer, Action? toggleTrayReveal = null,
-        Func<bool>? isTrayRevealed = null)
+        Func<bool>? isTrayRevealed = null, string? displayId = null, Action<TaskbarButtonSize>? requestResize = null)
     {
         this.openControl = openControl ?? throw new ArgumentNullException(nameof(openControl));
         this.showWindowsTaskbar = showWindowsTaskbar;
@@ -75,6 +79,8 @@ public sealed class LunaShell : IDisposable
         this.variant = variant;
         this.options = options.CheckedCopy();
         this.openXpExplorer = openXpExplorer;
+        this.displayId = displayId;
+        this.requestResize = requestResize;
         visuals = new LunaVisuals(variant);
         callbackMessage = ShellNative.RegisterWindowMessageW("11toXP.AppBar.7A7229A8");
         taskbarCreatedMessage = ShellNative.RegisterWindowMessageW("TaskbarCreated");
@@ -86,6 +92,12 @@ public sealed class LunaShell : IDisposable
 
     public event Action? ExplorerRestarted;
     public event Action<Exception>? ShellFaulted;
+
+    private bool SmallButtons => options.ButtonSize == TaskbarButtonSize.Small;
+    private bool CanResize => !options.IsLocked && requestResize is not null;
+    private double BarHeight => (SmallButtons ? 30 : 38) + (CanResize ? ResizeGripHeight : 0);
+    private double MinimumTaskWidth => options.ShowLabels ? SmallButtons ? 68 : 86 : SmallButtons ? 32 : 38;
+    private double MaximumTaskWidth => options.ShowLabels ? SmallButtons ? 135 : 163 : MinimumTaskWidth;
 
     internal bool CanFocusStart => registered && !fullScreen && !arranging &&
         bar is { IsVisible: true } && start is { IsVisible: true, IsEnabled: true };
@@ -138,12 +150,15 @@ public sealed class LunaShell : IDisposable
             source.AddHook(OnWindowMessage);
             RegisterBar();
             LayoutBar();
-            bar.Show();
-            LayoutBar();
+            if (reservation is not null)
+            {
+                bar.Show();
+                LayoutBar();
+            }
             bar.Opacity = 1;
 
             tasks = new WindowTasks(handle, () => menu is null ? 0 : new WindowInteropHelper(menu).Handle, dispatcher,
-                options.Grouping == TaskGrouping.Always);
+                options.Grouping == TaskGrouping.Always) { FullScreenWindow = fullScreenWindow };
             tasks.Changed += UpdateTasks;
             tasks.Start();
             UpdateClock();
@@ -170,7 +185,7 @@ public sealed class LunaShell : IDisposable
             if (!registered)
                 RegisterBar();
             LayoutBar();
-            if (!bar.IsVisible && !arranging)
+            if (!bar.IsVisible && !arranging && reservation is not null)
                 bar.Show();
             RefreshPalette();
             UpdateTrayRevealButton();
@@ -221,11 +236,25 @@ public sealed class LunaShell : IDisposable
         try
         {
             nint handle = source.Handle;
-            ShellNative.MonitorInfo monitor = GetPrimaryMonitor();
+            var monitor = GetTargetDisplay();
+            if (monitor is null)
+            {
+                RemoveReservation();
+                CloseMenu();
+                bar?.Hide();
+                return;
+            }
+            if (ShellNative.MonitorFromWindow(handle, ShellNative.MonitorDefaultToNearest) != monitor.Handle)
+            {
+                // Move the HWND onto the target before reading its per-monitor DPI.
+                MoveWindow(handle, new ShellNative.Rectangle(monitor.Bounds.Left, monitor.Bounds.Top,
+                    monitor.Bounds.Left + 1, monitor.Bounds.Top + 1));
+                reservation = null;
+            }
             int height = (int)Math.Round(BarHeight * DpiScale(handle));
             var data = ShellNative.AppBarData.For(handle);
             data.Edge = ShellNative.BottomEdge;
-            data.Area = monitor.Area;
+            data.Area = monitor.Bounds;
             data.Area.Top = data.Area.Bottom - height;
             ShellNative.SHAppBarMessage(ShellNative.AppBarQueryPosition, ref data);
             data.Area.Top = data.Area.Bottom - height;
@@ -233,17 +262,16 @@ public sealed class LunaShell : IDisposable
             {
                 ShellNative.SHAppBarMessage(ShellNative.AppBarSetPosition, ref data);
                 if (data.Area.Width <= 0 || data.Area.Height <= 0
-                    || data.Area.Top < monitor.Area.Top || data.Area.Bottom > monitor.Area.Bottom)
-                    throw new InvalidOperationException("Windows did not return a usable taskbar area on the primary monitor.");
+                    || data.Area.Left < monitor.Bounds.Left || data.Area.Right > monitor.Bounds.Right
+                    || data.Area.Top < monitor.Bounds.Top || data.Area.Bottom > monitor.Bounds.Bottom)
+                    throw new InvalidOperationException("Windows did not return a usable taskbar area on the selected display.");
                 reservation = data.Area;
             }
 
             ShellNative.Rectangle area = reservation.Value;
             if (ShellNative.GetWindowRect(handle, out ShellNative.Rectangle actual) && actual == area)
                 return;
-            if (!ShellNative.SetWindowPos(handle, 0, area.Left, area.Top, area.Width, area.Height,
-                    ShellNative.NoZOrder | ShellNative.NoActivate))
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "The 11toXP taskbar could not be positioned.");
+            MoveWindow(handle, area);
             ShellNative.SHAppBarMessage(ShellNative.AppBarWindowPositionChanged, ref data);
         }
         finally
@@ -252,13 +280,21 @@ public sealed class LunaShell : IDisposable
         }
     }
 
-    private static ShellNative.MonitorInfo GetPrimaryMonitor()
+    private ShellDisplay? GetTargetDisplay()
     {
-        nint monitor = ShellNative.MonitorFromPoint(0, 1); // MONITOR_DEFAULTTOPRIMARY
-        var info = ShellNative.MonitorInfo.Create();
-        if (monitor == 0 || !ShellNative.GetMonitorInfoW(monitor, ref info))
-            throw new InvalidOperationException("Windows could not describe the primary monitor.");
-        return info;
+        if (display?.Refresh() is { } cached && (displayId is not null || cached.IsPrimary))
+            return display = cached;
+        var displays = ShellDisplay.Enumerate();
+        return display = displayId is null
+            ? displays.FirstOrDefault(candidate => candidate.IsPrimary)
+            : displays.FirstOrDefault(candidate => string.Equals(candidate.Id, displayId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static void MoveWindow(nint handle, ShellNative.Rectangle area)
+    {
+        if (!ShellNative.SetWindowPos(handle, 0, area.Left, area.Top, area.Width, area.Height,
+                ShellNative.NoZOrder | ShellNative.NoActivate))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "The 11toXP shell window could not be positioned.");
     }
 
     private static double DpiScale(nint window)
@@ -275,7 +311,12 @@ public sealed class LunaShell : IDisposable
             QueueLayout(restart: true);
         else if ((uint)message == callbackMessage)
             OnAppBarNotification(window, (int)wParam, lParam != 0);
-        else if (message is ShellNative.DisplayChangeMessage or ShellNative.DpiChangedMessage)
+        else if (message == ShellNative.DisplayChangeMessage)
+        {
+            display = null;
+            QueueLayout();
+        }
+        else if (message == ShellNative.DpiChangedMessage)
             QueueLayout();
         else if (message == ShellNative.TimeChangeMessage)
             dispatcher.BeginInvoke(UpdateClock);
@@ -310,11 +351,10 @@ public sealed class LunaShell : IDisposable
                     QueueLayout();
                 break;
             case FullScreenNotification:
-                fullScreen = active;
-                if (active)
-                    CloseMenu();
-                ShellNative.SetWindowPos(window, active ? ShellNative.Bottom : ShellNative.Topmost,
-                    0, 0, 0, 0, ShellNative.NoMove | ShellNative.NoSize | ShellNative.NoActivate);
+                nint foreground = active ? ShellNative.GetForegroundWindow() : 0;
+                bool onThisDisplay = active && (foreground == 0 || display is null ||
+                    ShellNative.MonitorFromWindow(foreground, ShellNative.MonitorDefaultToNearest) == display.Handle);
+                SetFullScreen(window, onThisDisplay, foreground, fullScreenFromBounds && foreground == fullScreenWindow);
                 break;
             case ArrangeNotification:
                 arranging = active;
@@ -326,11 +366,74 @@ public sealed class LunaShell : IDisposable
                         return;
                     if (arranging)
                         bar.Hide();
-                    else
+                    else if (reservation is not null)
                         bar.Show();
                 });
                 break;
         }
+    }
+
+    private void SetFullScreen(nint barHandle, bool active, nint foreground, bool fromBounds = false)
+    {
+        fullScreen = active;
+        TrackFullScreenWindow(active ? foreground : 0, active && fromBounds);
+        if (active)
+            CloseMenu();
+        ShellNative.SetWindowPos(barHandle, active ? ShellNative.Bottom : ShellNative.Topmost,
+            0, 0, 0, 0, ShellNative.NoMove | ShellNative.NoSize | ShellNative.NoActivate);
+    }
+
+    private void TrackFullScreenWindow(nint window, bool fromBounds)
+    {
+        fullScreenWindow = window;
+        fullScreenFromBounds = fromBounds;
+        if (tasks is not null)
+            tasks.FullScreenWindow = window;
+    }
+
+    private void ReconcileFullScreenForeground(IReadOnlyList<TaskWindow> windows)
+    {
+        if (source is null || display is null)
+            return;
+        nint foreground = ShellNative.GetForegroundWindow();
+        bool visible = foreground != 0 && ShellNative.IsWindowVisible(foreground) && !ShellNative.IsIconic(foreground);
+        bool isTask = visible && windows.Any(task => task.Handle == foreground);
+        if (!fullScreen)
+        {
+            // Some fullscreen apps miss the Explorer notification. Limit detection to actual task
+            // windows so the desktop and shell surfaces cannot accidentally lower the bar.
+            if (isTask && CoversDisplay(foreground, display.Bounds))
+                SetFullScreen(source.Handle, true, foreground, fromBounds: true);
+            return;
+        }
+        if (visible && foreground == fullScreenWindow &&
+            (fullScreenFromBounds ? CoversDisplay(foreground, display.Bounds) :
+                ShellNative.MonitorFromWindow(foreground, ShellNative.MonitorDefaultToNearest) == display.Handle))
+            return;
+
+        // Explorer can omit the fullscreen-exit notification when the application closes.
+        // A replacement fullscreen foreground on this display should still keep the bar lowered.
+        if (isTask && CoversDisplay(foreground, display.Bounds))
+            TrackFullScreenWindow(foreground, fromBounds: true);
+        else
+            SetFullScreen(source.Handle, false, 0);
+    }
+
+    private static bool CoversDisplay(nint window, ShellNative.Rectangle displayBounds)
+    {
+        if (ShellNative.DwmGetWindowAttribute(window, ShellNative.DwmExtendedFrameBounds,
+                out ShellNative.Rectangle bounds, (uint)Marshal.SizeOf<ShellNative.Rectangle>()) != 0 &&
+            !ShellNative.GetWindowRect(window, out bounds))
+            return false;
+        return CoversDisplay(bounds, displayBounds);
+    }
+
+    internal static bool CoversDisplay(ShellNative.Rectangle bounds, ShellNative.Rectangle displayBounds)
+    {
+        const int edgeTolerance = 2;
+        return bounds.Width > 0 && bounds.Height > 0 &&
+            bounds.Left <= displayBounds.Left + edgeTolerance && bounds.Top <= displayBounds.Top + edgeTolerance &&
+            bounds.Right >= displayBounds.Right - edgeTolerance && bounds.Bottom >= displayBounds.Bottom - edgeTolerance;
     }
 
     private void QueueLayout(bool restart = false)
@@ -354,13 +457,14 @@ public sealed class LunaShell : IDisposable
             if (restart)
             {
                 RemoveReservation();
-                RegisterBar();
-                if (!arranging && !bar.IsVisible)
-                    bar.Show();
                 tasks?.Refresh();
             }
+            if (!registered && GetTargetDisplay() is not null)
+                RegisterBar();
             ShellNative.Rectangle? previous = reservation;
             LayoutBar();
+            if (!arranging && !bar.IsVisible && reservation is not null)
+                bar.Show();
             if (restart || previous != reservation)
                 CloseMenu();
         }
@@ -384,6 +488,9 @@ public sealed class LunaShell : IDisposable
         taskButtons.Clear();
         bar.Background = visuals.Bar;
         var layout = new Grid { Background = visuals.Bar, ContextMenu = CreateBarContextMenu() };
+        if (CanResize)
+            layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(ResizeGripHeight) });
+        layout.RowDefinitions.Add(new RowDefinition());
         foreach (GridLength width in new[] { GridLength.Auto, GridLength.Auto, new GridLength(1, GridUnitType.Star),
                                             GridLength.Auto, GridLength.Auto, GridLength.Auto })
             layout.ColumnDefinitions.Add(new ColumnDefinition { Width = width });
@@ -460,7 +567,52 @@ public sealed class LunaShell : IDisposable
         clock.Click += (_, _) => RunFromBar(() => StartMenu.LaunchFile("ms-settings:dateandtime"));
         AddColumn(layout, clock, 5);
 
+        if (CanResize)
+            AddResizeGrip(layout);
         bar.Content = layout;
+    }
+
+    private void AddResizeGrip(Grid layout)
+    {
+        var grip = new Thumb
+        {
+            Focusable = true,
+            Cursor = Cursors.SizeNS,
+            Background = visuals.Tray,
+            ToolTip = "Resize XP taskbar. Drag up or down, or use the Up and Down arrow keys."
+        };
+        AutomationProperties.SetAutomationId(grip, "TaskbarResizeGrip");
+        AutomationProperties.SetName(grip, "Resize XP Taskbar");
+        AutomationProperties.SetHelpText(grip, "Press Up for large buttons or Down for small buttons.");
+        var line = new FrameworkElementFactory(typeof(Border));
+        line.SetValue(Border.BackgroundProperty, new TemplateBindingExtension(Control.BackgroundProperty));
+        line.SetValue(Border.BorderBrushProperty, visuals.TaskEdge);
+        line.SetValue(Border.BorderThicknessProperty, new Thickness(0, 0, 0, 1));
+        var template = new ControlTemplate(typeof(Thumb)) { VisualTree = line };
+        var focused = new Trigger { Property = UIElement.IsKeyboardFocusedProperty, Value = true };
+        focused.Setters.Add(new Setter(Control.BackgroundProperty, SystemColors.HighlightBrush));
+        template.Triggers.Add(focused);
+        grip.Template = template;
+        grip.DragCompleted += (_, args) =>
+        {
+            if (!args.Canceled && Math.Abs(args.VerticalChange) >= 5)
+                RequestResize(args.VerticalChange < 0 ? TaskbarButtonSize.Large : TaskbarButtonSize.Small);
+        };
+        grip.PreviewKeyDown += (_, args) =>
+        {
+            if (args.Key is not (Key.Up or Key.Down))
+                return;
+            args.Handled = true;
+            RequestResize(args.Key == Key.Up ? TaskbarButtonSize.Large : TaskbarButtonSize.Small);
+        };
+        Grid.SetColumnSpan(grip, layout.ColumnDefinitions.Count);
+        layout.Children.Add(grip);
+    }
+
+    private void RequestResize(TaskbarButtonSize size)
+    {
+        if (size != options.ButtonSize && requestResize is not null)
+            RunFromBar(() => requestResize(size));
     }
 
     private void UpdateTrayRevealButton()
@@ -476,6 +628,7 @@ public sealed class LunaShell : IDisposable
     private static void AddColumn(Grid grid, UIElement child, int column)
     {
         Grid.SetColumn(child, column);
+        Grid.SetRow(child, grid.RowDefinitions.Count - 1);
         grid.Children.Add(child);
     }
 
@@ -624,6 +777,7 @@ public sealed class LunaShell : IDisposable
 
     private void UpdateTasks(IReadOnlyList<TaskWindow> windows, nint active)
     {
+        ReconcileFullScreenForeground(windows);
         if (taskPanel is null)
             return;
         TaskbarEntry[] entries = TaskbarEntry.Build(windows, options.Grouping);
@@ -665,13 +819,19 @@ public sealed class LunaShell : IDisposable
     private TaskButton CreateTaskButton(TaskbarEntry entry)
     {
         var content = new DockPanel { LastChildFill = true };
-        var icon = new Image { Width = 16, Height = 16 };
+        double iconSize = SmallButtons ? 14 : 16;
+        var icon = new Image { Width = iconSize, Height = iconSize };
         UIElement fallback = LunaVisuals.ShortcutGlyph("M 1,2 L 19,2 19,17 1,17 Z M 3,6 L 3,15 17,15 17,6 Z",
             visuals.HighContrast ? SystemColors.ControlTextBrush : visuals.BarText);
         var glyph = new Grid();
         glyph.Children.Add(icon);
         glyph.Children.Add(fallback);
-        var iconCell = new Border { Width = 17, Margin = new Thickness(0, 0, 5, 0), Child = glyph };
+        var iconCell = new Border
+        {
+            Width = iconSize + 1,
+            Margin = new Thickness(0, 0, options.ShowLabels ? 5 : 0, 0),
+            Child = glyph
+        };
         content.Children.Add(iconCell);
         var arrow = new TextBlock { Text = "▾", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(3, 0, 0, 0) };
         DockPanel.SetDock(arrow, Dock.Right);
@@ -679,14 +839,19 @@ public sealed class LunaShell : IDisposable
         var title = new TextBlock
         {
             TextTrimming = TextTrimming.CharacterEllipsis,
-            VerticalAlignment = VerticalAlignment.Center
+            VerticalAlignment = VerticalAlignment.Center,
+            Visibility = options.ShowLabels ? Visibility.Visible : Visibility.Collapsed
         };
         content.Children.Add(title);
 
         Button button = visuals.NewButton(entry.Label, content, visuals.TaskButtonStyle, visuals.Task, visuals.TaskEdge);
-        button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
+        button.HorizontalContentAlignment = options.ShowLabels ? HorizontalAlignment.Stretch : HorizontalAlignment.Center;
         button.Width = MaximumTaskWidth;
-        button.Height = 29;
+        button.Height = SmallButtons ? 22 : 29;
+        if (!options.ShowLabels)
+            button.Padding = new Thickness(2, 1, 2, 1);
+        else if (SmallButtons)
+            button.Padding = new Thickness(3, 1, 3, 1);
         button.Margin = new Thickness(0, 0, 2, 0);
         var item = new TaskButton(button, title, arrow, icon, fallback, entry);
         ContextMenu actions = CreateContextMenu();
@@ -752,17 +917,21 @@ public sealed class LunaShell : IDisposable
 
         RunFromBar(() =>
         {
-            ShellNative.MonitorInfo monitor = GetPrimaryMonitor();
+            var monitor = GetTargetDisplay();
+            if (monitor is null)
+                return;
             double scale = DpiScale(source.Handle);
-            double width = Math.Min(397, monitor.Area.Width / scale);
-            double height = Math.Clamp((area.Top - monitor.Area.Top) / scale, 1, 335);
+            int pixelWidth = Math.Min((int)Math.Round(397 * scale), monitor.Bounds.Right - area.Left);
+            int pixelHeight = Math.Min((int)Math.Round(335 * scale), area.Top - monitor.Bounds.Top);
+            if (pixelWidth <= 0 || pixelHeight <= 0)
+                return;
             var opened = new StartMenu(bar, visuals, openControl, showWindowsTaskbar, openXpExplorer, options.UseXpExplorer)
             {
-                Width = width,
-                Height = height,
-                Left = area.Left / scale,
-                Top = area.Top / scale - height
+                Width = pixelWidth / scale,
+                Height = pixelHeight / scale,
+                Opacity = 0
             };
+            var bounds = new ShellNative.Rectangle(area.Left, area.Top - pixelHeight, area.Left + pixelWidth, area.Top);
             opened.Closed += (_, _) =>
             {
                 if (ReferenceEquals(menu, opened))
@@ -770,7 +939,20 @@ public sealed class LunaShell : IDisposable
             };
             opened.EscapeDismissed += () => TryFocusStart();
             menu = opened;
-            opened.Show();
+            try
+            {
+                nint handle = new WindowInteropHelper(opened).EnsureHandle();
+                MoveWindow(handle, bounds);
+                opened.Show();
+                if (!ShellNative.GetWindowRect(handle, out ShellNative.Rectangle actual) || actual != bounds)
+                    MoveWindow(handle, bounds);
+                opened.Opacity = 1;
+            }
+            catch
+            {
+                CloseMenu();
+                throw;
+            }
         });
     }
 
