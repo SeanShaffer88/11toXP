@@ -21,18 +21,20 @@ internal interface IThemePlatform
     void ValidateAppearance(AppearanceSnapshot baseline);
     void ApplyAppearance(AppearanceSnapshot baseline, AppearanceComponents components);
     void RestoreAppearance(AppearanceSnapshot baseline, AppearanceComponents components);
-    void StartShell(LunaVariant variant, TaskbarOptions options);
+    void StartShell(LunaVariant variant, TaskbarOptions options, bool allowTrayReveal);
     void StopShell();
 }
 
 internal sealed class ThemePlatform(
     string directory, Action openControl, Action showWindowsTaskbar, Action explorerRestarted,
-    Action<Exception> shellFaulted, Action<string?> openXpExplorer) : IThemePlatform
+    Action<Exception> shellFaulted, Action<string?> openXpExplorer, Action toggleTrayReveal,
+    Func<bool> isTrayRevealed) : IThemePlatform
 {
     private readonly DesktopAppearance appearance = new(directory);
     private LunaShell? shell;
     private LunaVariant shellVariant;
     private TaskbarOptions? shellOptions;
+    private bool shellAllowsTrayReveal;
 
     public int Build => Environment.OSVersion.Version.Build;
     public string StartupCommand() => WindowsSession.StartupCommand();
@@ -55,9 +57,10 @@ internal sealed class ThemePlatform(
     internal bool CanFocusXpTaskbar => shell?.CanFocusStart == true;
     internal bool TryFocusXpTaskbar() => shell?.TryFocusStart() == true;
 
-    public void StartShell(LunaVariant variant, TaskbarOptions options)
+    public void StartShell(LunaVariant variant, TaskbarOptions options, bool allowTrayReveal)
     {
-        if (shell is not null && shellVariant == variant && shellOptions is { } previous &&
+        if (shell is not null && shellVariant == variant && shellAllowsTrayReveal == allowTrayReveal &&
+            shellOptions is { } previous &&
             previous.Grouping == options.Grouping && previous.UseXpExplorer == options.UseXpExplorer &&
             previous.HasSameQuickLaunch(options))
         {
@@ -65,7 +68,8 @@ internal sealed class ThemePlatform(
             return;
         }
         StopShell();
-        var candidate = new LunaShell(openControl, showWindowsTaskbar, variant, options, openXpExplorer);
+        var candidate = new LunaShell(openControl, showWindowsTaskbar, variant, options, openXpExplorer,
+            allowTrayReveal ? toggleTrayReveal : null, isTrayRevealed);
         candidate.ExplorerRestarted += explorerRestarted;
         candidate.ShellFaulted += shellFaulted;
         try
@@ -74,6 +78,7 @@ internal sealed class ThemePlatform(
             shell = candidate;
             shellVariant = variant;
             shellOptions = options;
+            shellAllowsTrayReveal = allowTrayReveal;
         }
         catch
         {
@@ -98,6 +103,7 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
 {
     public ThemeState? State { get; private set; }
     public bool ShellPaused { get; private set; }
+    public bool TrayRevealed { get; private set; }
     public string ShellStatus { get; private set; } = "Windows taskbar";
     public string AppearanceStatus { get; private set; } = "Windows settings";
     public string WallpaperStatus { get; private set; } = "Unmanaged";
@@ -233,9 +239,37 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
         var state = ActiveState();
         platform.StopShell();
         ShellPaused = true;
+        TrayRevealed = false;
         ShellStatus = "Paused";
         RestoreAutoHide(state);
         CompatibilityStatus = "Repair resumes the XP taskbar";
+    }
+
+    public void ToggleTrayReveal()
+    {
+        var state = ActiveState();
+        if (ShellPaused || !state.Preferences.UseTaskbar || state.Preferences.KeepWindowsTrayVisible ||
+            state.AutoHideBuild != platform.Build)
+            throw new InvalidOperationException("Repair the XP-only taskbar to use temporary tray reveal.");
+
+        bool autoHide = platform.ReadAutoHide() ??
+            throw new InvalidOperationException("Windows taskbar auto-hide is unavailable. Try again after Explorer is ready.");
+        if (TrayRevealed)
+        {
+            if (!autoHide && !ConfirmTrayAutoHide(true))
+                throw new InvalidOperationException("Windows did not hide its taskbar. Try again.");
+            TrayRevealed = false;
+            CompatibilityStatus = $"Auto-hide verified on build {platform.Build}";
+            if (state.OriginalAutoHide == true)
+                SaveAutoHideBaseline(state, null);
+            return;
+        }
+
+        if (!autoHide && state.OriginalAutoHide is null)
+            throw new InvalidOperationException("The Windows tray is already visible. Repair resumes the XP-only taskbar.");
+        if (!TryRevealTray(state, autoHide))
+            throw new InvalidOperationException(CompatibilityStatus);
+        TrayRevealed = true;
     }
 
     public void RecoverShellFault(Exception fault)
@@ -244,6 +278,7 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
             return;
         LastRecoveryFailure = RecoveryFailure.From("XP taskbar", fault);
         ShellPaused = true;
+        TrayRevealed = false;
         ShellStatus = "Paused after a taskbar error";
         CompatibilityStatus = "Repair needed";
         try
@@ -264,6 +299,7 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
             return;
         state.Phase = ThemePhase.Restoring;
         SaveRestoreJournal(() => journal.Save(state));
+        TrayRevealed = false;
         CompatibilityStatus = "Restore pending";
         var errors = new List<string>();
         AttemptRestore("XP taskbar", () => platform.StopShell(), () => ShellStatus = "Windows taskbar", errors);
@@ -323,6 +359,7 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
     {
         var errors = new List<string>();
         ShellPaused = false;
+        TrayRevealed = false;
         RunComponent("XP taskbar", () => RefreshShell(state, verifyBuild), () => ShellStatus = "Needs repair", errors);
         RunComponent("Appearance", () => ReconcileAppearance(state), () => AppearanceStatus = "Needs repair", errors);
         if (state.Wallpaper is { } wallpaper)
@@ -467,7 +504,7 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
             CompatibilityStatus = "XP taskbar disabled";
             return;
         }
-        try { platform.StartShell(state.Preferences.Variant, state.Preferences.Taskbar); }
+        try { platform.StartShell(state.Preferences.Variant, state.Preferences.Taskbar, !state.Preferences.KeepWindowsTrayVisible); }
         catch
         {
             RestoreAutoHide(state);
@@ -483,6 +520,11 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
         if (state.Preferences.KeepWindowsTrayVisible)
         {
             ShowWindowsTray(state, current.Value);
+            return;
+        }
+        if (TrayRevealed)
+        {
+            TryRevealTray(state, current.Value);
             return;
         }
         if (!verifyBuild && state.AutoHideBuild != platform.Build)
@@ -524,6 +566,26 @@ internal sealed class ThemeCoordinator(ThemeJournal journal, IThemePlatform plat
             }
         }
     }
+
+    private bool TryRevealTray(ThemeState state, bool autoHide)
+    {
+        if (autoHide)
+        {
+            // Keep ownership even when a temporary reveal matches the original native setting.
+            if (state.OriginalAutoHide is null)
+                SaveAutoHideBaseline(state, true);
+            if (!ConfirmTrayAutoHide(false))
+            {
+                CompatibilityStatus = "Windows could not show its tray. Try again.";
+                return false;
+            }
+        }
+        CompatibilityStatus = "Windows tray temporarily visible";
+        return true;
+    }
+
+    private bool ConfirmTrayAutoHide(bool enabled) =>
+        platform.SetAutoHide(enabled) || platform.ReadAutoHide() == enabled;
 
     private void ShowWindowsTray(ThemeState state, bool autoHide)
     {

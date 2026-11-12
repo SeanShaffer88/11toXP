@@ -26,6 +26,9 @@ internal static class ThemeChecks
             WithSession(WindowsTrayDefault);
             WithSession(WindowsTrayModeChanges);
             WithSession(WindowsTrayUnavailable);
+            WithSession(TemporaryTrayRevealLifecycle);
+            WithSession(TemporaryTrayRevealFailures);
+            WithSession(TemporaryTrayRevealRecovery);
             WithSession(MovedExecutable);
             WithSession(SignInCollision);
             WithSession(SessionOnlyLifecycle);
@@ -214,6 +217,118 @@ internal static class ThemeChecks
         platform.AutoHideAvailable = true;
         app.Restore();
         Require(platform.AutoHide && journal.Load() is null, "Restore retries when the native taskbar is available again.");
+    }
+
+    private static void TemporaryTrayRevealLifecycle(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
+    {
+        app.Apply(null);
+        ExpectFailure(app.ToggleTrayReveal);
+        Require(!platform.TrayRevealAllowed && platform.AutoHideWrites == 0,
+            "Temporary reveal is available only in XP-only mode.");
+        app.Repair(null, XpTaskbarOnly);
+        int shellCalls = platform.ShellCalls;
+        int appearanceCalls = platform.AppearanceApplies.Count;
+        string? startup = platform.Registered;
+        app.ToggleTrayReveal();
+        Require(platform.TrayRevealAllowed && app.TrayRevealed && platform.Shell && !platform.AutoHide &&
+            journal.Load() is { OriginalAutoHide: false, Preferences.KeepWindowsTrayVisible: false },
+            "Show keeps the XP shell and retains recovery for the temporary tray.");
+        app.ToggleTrayReveal();
+        Require(!app.TrayRevealed && platform.AutoHide && journal.Load()?.OriginalAutoHide == false &&
+            platform.ShellCalls == shellCalls && platform.AppearanceApplies.Count == appearanceCalls &&
+            platform.WallpaperCalls == 0 && platform.Registered == startup,
+            "Hide restores XP-only mode without restarting the XP shell or applying unrelated changes.");
+
+        app.ToggleTrayReveal();
+        app.Repair(null);
+        Require(!app.TrayRevealed && platform.AutoHide, "Repair ends a temporary reveal.");
+        app.ToggleTrayReveal();
+        app.ShowWindowsTaskbar();
+        ExpectFailure(app.ToggleTrayReveal);
+        Require(!app.TrayRevealed && !platform.AutoHide && !platform.Shell,
+            "Pausing clears the temporary override and preserves the original native setting.");
+        app.Restore();
+    }
+
+    private static void TemporaryTrayRevealFailures(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
+    {
+        platform.SetAutoHide(true);
+        app.Apply(null, XpTaskbarOnly);
+        platform.BeforeSetAutoHide = enabled =>
+        {
+            if (!enabled)
+                Require(journal.Load()?.OriginalAutoHide == true, "Checkpoint original auto-hide before reveal.");
+        };
+        platform.AutoHideAvailable = false;
+        int writes = platform.AutoHideWrites;
+        ExpectFailure(app.ToggleTrayReveal);
+        Require(platform.AutoHideWrites == writes && journal.Load()?.OriginalAutoHide is null,
+            "An unavailable native setting cannot be written or claimed.");
+        platform.AutoHideAvailable = true;
+        platform.FailingAutoHideTarget = false;
+        ExpectFailure(app.ToggleTrayReveal);
+        Require(!app.TrayRevealed && platform.AutoHide && journal.Load()?.OriginalAutoHide == true,
+            "An unconfirmed show retains recovery and can be retried.");
+        platform.FailingAutoHideTarget = null;
+        app.ToggleTrayReveal();
+        platform.FailingAutoHideTarget = true;
+        ExpectFailure(app.ToggleTrayReveal);
+        Require(app.TrayRevealed && !platform.AutoHide && journal.Load()?.OriginalAutoHide == true,
+            "An unconfirmed hide retains the reveal and its restore baseline.");
+        platform.FailingAutoHideTarget = null;
+        app.ToggleTrayReveal();
+        Require(!app.TrayRevealed && platform.AutoHide && journal.Load()?.OriginalAutoHide is null,
+            "A verified hide releases ownership when auto-hide was originally on.");
+        platform.AutoHideReadbackUnconfirmed = true;
+        app.ToggleTrayReveal();
+        Require(app.TrayRevealed && !platform.AutoHide, "A fresh read can confirm a previously unconfirmed show.");
+        app.ToggleTrayReveal();
+        Require(!app.TrayRevealed && platform.AutoHide, "A fresh read can confirm a previously unconfirmed hide.");
+        platform.BeforeSetAutoHide = _ => platform.AutoHideAvailable = false;
+        ExpectFailure(app.ToggleTrayReveal);
+        Require(!app.TrayRevealed && !platform.AutoHide && journal.Load()?.OriginalAutoHide == true,
+            "A native change without available readback is recoverable.");
+        platform.BeforeSetAutoHide = null;
+        platform.AutoHideAvailable = true;
+        app.ToggleTrayReveal();
+        Require(app.TrayRevealed && !platform.AutoHide, "Retry recognizes an already visible tray with retained ownership.");
+        app.ToggleTrayReveal();
+        platform.SetAutoHide(false);
+        writes = platform.AutoHideWrites;
+        ExpectFailure(app.ToggleTrayReveal);
+        Require(!app.TrayRevealed && platform.AutoHideWrites == writes && journal.Load()?.OriginalAutoHide is null,
+            "An already visible tray without retained ownership cannot be adopted.");
+        app.Restore();
+    }
+
+    private static void TemporaryTrayRevealRecovery(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
+    {
+        app.Apply(null, XpTaskbarOnly);
+        app.ToggleTrayReveal();
+        platform.SetAutoHide(true);
+        app.ExplorerRestarted();
+        Require(app.TrayRevealed && !platform.AutoHide && journal.Load()?.OriginalAutoHide == false,
+            "Explorer restart reasserts the temporary reveal and retains ownership.");
+
+        var reopened = new ThemeCoordinator(journal, platform);
+        reopened.Load();
+        reopened.Resume();
+        Require(!reopened.TrayRevealed && platform.AutoHide,
+            "A new process resumes XP-only mode after an interrupted reveal.");
+        platform.Build++;
+        reopened.Resume();
+        int writes = platform.AutoHideWrites;
+        ExpectFailure(reopened.ToggleTrayReveal);
+        Require(!platform.AutoHide && platform.AutoHideWrites == writes,
+            "Temporary reveal cannot bypass the Windows build compatibility check.");
+        reopened.Restore();
+
+        platform.SetAutoHide(true);
+        reopened.Apply(null, XpTaskbarOnly);
+        reopened.ToggleTrayReveal();
+        reopened.Restore();
+        Require(!reopened.TrayRevealed && platform.AutoHide && !platform.Shell && journal.Load() is null,
+            "Restore during a reveal returns to the originally auto-hidden taskbar.");
     }
 
     private static void SignInCollision(ThemeCoordinator app, ThemeJournal journal, FakePlatform platform)
@@ -537,11 +652,13 @@ internal static class ThemeChecks
         public int Build { get; set; } = 26100;
         public bool AutoHide { get; private set; }
         public bool Shell { get; private set; }
+        public bool TrayRevealAllowed { get; private set; }
         public bool ShellWasStartedBeforeAutoHide { get; private set; }
         public int ShellCalls { get; private set; }
         public int AutoHideReads { get; private set; }
         public int AutoHideWrites { get; private set; }
         public bool AutoHideAvailable { get; set; } = true;
+        public bool AutoHideReadbackUnconfirmed { get; set; }
         public bool? FailingAutoHideTarget { get; set; }
         public Action<bool>? BeforeSetAutoHide { get; set; }
         public LunaVariant Variant { get; private set; }
@@ -596,7 +713,7 @@ internal static class ThemeChecks
             if (enabled)
                 ShellWasStartedBeforeAutoHide = Shell;
             AutoHide = enabled;
-            return true;
+            return !AutoHideReadbackUnconfirmed;
         }
         public WallpaperPlan CaptureWallpaper(string image)
         {
@@ -634,10 +751,11 @@ internal static class ThemeChecks
                 throw new InvalidOperationException("Injected appearance Restore failure.");
             AppearanceRestores.Add(components);
         }
-        public void StartShell(LunaVariant variant, TaskbarOptions options)
+        public void StartShell(LunaVariant variant, TaskbarOptions options, bool allowTrayReveal)
         {
             ShellCalls++;
             Shell = true;
+            TrayRevealAllowed = allowTrayReveal;
             Variant = variant;
         }
         public void StopShell() => Shell = false;
