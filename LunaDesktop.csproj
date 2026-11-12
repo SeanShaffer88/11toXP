@@ -7,7 +7,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.3.0-beta.2</Version>
+    <Version>0.3.0</Version>
     <AssemblyName>11toXP</AssemblyName>
     <RootNamespace>LunaDesktop</RootNamespace>
     <Product>11toXP</Product>
